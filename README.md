@@ -202,6 +202,10 @@ npm run importar:comercios
 
 Lee la hoja de Google como CSV y hace upsert por comercio, así que se puede repetir. Cada documento: `comercio`, `categoria`, `mercado`, `enviaA` (países; `*` = todo el mundo), `productoPrueba`, `variantId`, `precio`, `moneda`, `carritoUrl`, `actualizado`. Índices en `comercio` (único), `enviaA` y `mercado + categoria`. Ejemplo, tiendas que envían a EE. UU.: `db.comercios.find({ enviaA: { $in: ["US", "*"] } })`.
 
+### Tarjetas de prueba en MongoDB
+
+`npm run importar:tarjetas` lee la tabla **Test cards** de la [página Setup de Reap](https://docs.reap.global/agentic-payments/setup) y la carga en la colección `tarjetas_prueba` (número, CVC, vencimiento, red, últimos 4 y el OTP del sandbox). Son tarjetas **públicas** que solo funcionan con la API de Agentic Payments; sirven para capturarlas en la página hosted de Reap cuando la tarjeta asignada al equipo falla. La tarjeta asignada en privado no se guarda en la base.
+
 ### Registrar la tarjeta (una sola vez)
 
 1. En el dashboard, "Registrar tarjeta en Reap" crea un enrollment `EXTERNAL` con owner `CLIENT_REFERENCE` (la empresa).

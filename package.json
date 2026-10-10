@@ -11,7 +11,8 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "test": "node --test",
-    "importar:comercios": "node --env-file-if-exists=.env scripts/importar-comercios.mjs"
+    "importar:comercios": "node --env-file-if-exists=.env scripts/importar-comercios.mjs",
+    "importar:tarjetas": "node --env-file-if-exists=.env scripts/importar-tarjetas-prueba.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
