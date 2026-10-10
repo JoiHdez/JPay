@@ -110,6 +110,8 @@ export function cuentaRegresiva(ms) {
  */
 export function motivosBloqueo(intent, tarjeta, ahora = Date.now()) {
   const m = [];
+  if (intent.estado === 'RECHAZADA') return ['Finanzas rechazó la compra.'];
+  if (intent.estado === 'CAMBIOS_SOLICITADOS') return ['Finanzas pidió cambios; falta recotizar.'];
   if (intent.estado !== 'APROBADO') return [`La compra está ${intent.estado}.`];
   const ms = restante(intent.expira, ahora);
   if (intent.cotizacion === 'ERROR' || !intent.quoteId) m.push('Sin cotización de Reap. Recotiza para obtener una.');
