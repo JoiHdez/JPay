@@ -3,6 +3,7 @@
 // codigo y un mensaje para el chat y el dashboard.
 import { CATEGORIAS } from './catalogo.js';
 import { cuadra, centavos, usd } from './ledger.js';
+import { RECOTIZABLES } from './estados.js';
 
 const palabras = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[a-z0-9]{4,}/g) || [];
 
@@ -11,7 +12,7 @@ const palabras = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ
  * @param propuesta { producto: { nombre, tienda }, cantidad, envioId }
  * @param quote     respuesta de Reap: { shippingOptions, amountBreakdown, expiresAt }
  * @param pre       pre-asiento armado desde ese quote
- * @param disponibleCc  centavos disponibles en el centro de costo, sin contar el compromiso del intent
+ * @param disponibleCc  centavos disponibles en el centro de costo despues de reservar el tope del intent
  * @param ahora     Date
  */
 export function revisar({ intent, propuesta, quote, pre, disponibleCc, ahora = new Date() }) {
@@ -19,7 +20,8 @@ export function revisar({ intent, propuesta, quote, pre, disponibleCc, ahora = n
   const malo = (codigo, mensaje) => v.push({ codigo, mensaje });
   const final = quote.amountBreakdown?.finalAmount;
 
-  if (intent.estado !== 'APROBADO') malo('INTENT_CONSUMIDO', `El intent esta ${intent.estado}; no admite otro pago.`);
+  // Solo se cotiza lo que todavia no se autoriza ni termina (ver src/estados.js).
+  if (!RECOTIZABLES.includes(intent.estado)) malo('INTENT_CONSUMIDO', `El intent esta ${intent.estado}; no admite otro pago.`);
   if (quote.expiresAt && new Date(quote.expiresAt) <= ahora) malo('QUOTE_EXPIRADO', 'La cotizacion de Reap ya expiro.');
 
   if (intent.merchant && (propuesta.producto.tienda || '').toLowerCase() !== intent.merchant.toLowerCase()) {

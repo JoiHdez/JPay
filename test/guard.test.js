@@ -5,7 +5,7 @@ import { preAsiento } from '../src/ledger.js';
 import { leerInstrucciones, proponer } from '../src/agente.js';
 
 const ahora = new Date('2026-10-10T00:00:00Z');
-const intent = { estado: 'APROBADO', busqueda: 'laundry detergent', categoria: 'oficina', cuenta: 5100, maxCantidad: 2, topeUsd: 40, envio: 'economico', moneda: 'USD' };
+const intent = { estado: 'COTIZADA', busqueda: 'laundry detergent', categoria: 'oficina', cuenta: 5100, maxCantidad: 2, topeUsd: 40, envio: 'economico', moneda: 'USD' };
 const quote = {
   expiresAt: '2026-10-10T00:05:00Z',
   shippingOptions: [
@@ -37,7 +37,7 @@ test('la cotizacion envenenada se bloquea: 10 unidades y express', () => {
 test('detecta producto ajeno, tope, moneda, cuenta, descuadre, expirado y consumido', () => {
   const caro = { ...quote, amountBreakdown: { ...quote.amountBreakdown, finalAmount: { amount: 80, currency: 'MXN' } } };
   const r = revisar({
-    intent: { ...intent, estado: 'COMPLETADO', cuenta: 5300 },
+    intent: { ...intent, estado: 'PAGADA', cuenta: 5300 },
     propuesta: { producto: { nombre: 'Gaming Chair', tienda: 'X' }, cantidad: 1, envioId: 'g' },
     quote: { ...caro, expiresAt: '2026-10-09T00:00:00Z' },
     pre: preAsiento({ cc: 'OPS', cuenta: 5100, breakdown: caro.amountBreakdown }),

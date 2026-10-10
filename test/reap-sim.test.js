@@ -34,7 +34,7 @@ async function cotizarPreset(p, cantidad) {
   const producto = { nombre: primero.name, tienda: primero.merchant.name };
   const propuesta = proponer({ producto, quote, cantidadBase: cantidad });
   const cuenta = CATEGORIAS[p.categoria].cuenta;
-  const intent = { estado: 'APROBADO', busqueda: p.busqueda, categoria: p.categoria, cuenta, maxCantidad: p.max, topeUsd: p.tope, envio: 'economico', moneda: 'USD' };
+  const intent = { estado: 'SIN_COTIZACION', busqueda: p.busqueda, categoria: p.categoria, cuenta, maxCantidad: p.max, topeUsd: p.tope, envio: 'economico', moneda: 'USD' };
   const pre = preAsiento({ cc: p.cc, cuenta, breakdown: quote.amountBreakdown });
   return revisar({ intent, propuesta, quote, pre, disponibleCc: 0 });
 }
