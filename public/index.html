@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>J-Pay</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/comun.css">
 <style>
   .inicio { max-width: 760px; margin: 48px auto; padding: 0 16px; }
@@ -17,12 +18,13 @@
 </head>
 <body>
 <div class="inicio">
-  <div class="fila"><span class="logo">J</span><div><h1>J-Pay</h1><div class="sub">Pagos agénticos que se contabilizan solos</div></div></div>
+  <div class="fila" data-encabezado data-titulo="J-Pay" data-subtitulo="Pagos agénticos que se contabilizan solos"></div>
   <div class="roles">
     <a class="rol" href="/solicitante.html"><section><h3>Pedir una compra</h3><div class="muted">Quien necesita algo: pide, el agente cotiza en Reap y ve el estado de sus compras.</div></section></a>
     <a class="rol" href="/finanzas.html"><section><h3>Finanzas</h3><div class="muted">Quien autoriza: revisa lo que cotizó el agente y aprueba el pago en Reap.</div></section></a>
     <a class="rol" href="/contador.html"><section><h3>Contador</h3><div class="muted">Ledger en vivo, balanza, log del Ledger Guard, facturas y cierre de mes.</div></section></a>
   </div>
 </div>
+<script type="module" src="/comun.js"></script>
 </body>
 </html>
