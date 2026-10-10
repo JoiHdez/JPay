@@ -17,7 +17,7 @@ import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
 import { atenderAprobacion } from './reap-sim.js';
-import { leerCheckout, cierreDelCheckout, desglose, porVencer } from './checkout.js';
+import { leerCheckout, cierreDelCheckout, desglose, porVencer, crearThrottle } from './checkout.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
 // 400 AGENTIC_REQUEST_REJECTED {field: shippingAddress} hasta el primer pedido; mejor no arrancar.
@@ -117,12 +117,16 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
   registrarGuard(intent, resultado, contexto);
 }
 
+// Una consulta a Reap por recurso cada 3 s: cada pantalla abierta pide /api/estado cada 6 s y, sin
+// esto, cada vuelta repetiria un GET por checkout en vuelo y otro por la tarjeta.
+const cadaTresSegundos = crearThrottle(3000);
+
 // Lee el checkout y contabiliza; src/checkout.js decide que publicar. REQUIRES_ACTION y PROCESSING
 // siguen en checkout: /api/estado y /retorno vuelven a consultar hasta COMPLETED, FAILED o EXPIRED.
 async function conciliar(intent) {
   if (intent.estado !== 'EN_CHECKOUT') return;
   if (!intent.checkoutId) return soltarReclamo(intent);
-  const lectura = leerCheckout(await reapApi.consultarCheckout(intent.checkoutId));
+  const lectura = leerCheckout(await cadaTresSegundos(`chk:${intent.checkoutId}`, () => reapApi.consultarCheckout(intent.checkoutId)));
   // Otra consulta pudo cerrar el intent mientras esta esperaba a Reap: no se publica dos veces.
   if (intent.estado !== 'EN_CHECKOUT' || !lectura.estado) return;
   const antes = JSON.stringify([intent.checkout, intent.error]);
@@ -248,7 +252,8 @@ const rutas = {
   'GET /api/estado': async () => {
     for (const i of Object.values(db.intents)) await conciliar(i).catch((e) => console.error(e.message));
     let tarjeta = null;
-    if (db.enrollmentId) tarjeta = (await reapApi.enrollment(db.enrollmentId).catch(() => ({ status: 'SIN_CONEXION' }))).status;
+    const enr = db.enrollmentId;
+    if (enr) tarjeta = (await cadaTresSegundos(`enr:${enr}`, () => reapApi.enrollment(enr)).catch(() => ({ status: 'SIN_CONEXION' }))).status;
     const completados = Object.values(db.intents).filter((i) => i.estado === 'COMPLETADO');
     return {
       modo: modoReap,

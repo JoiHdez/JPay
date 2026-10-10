@@ -68,3 +68,19 @@ export function desglose(b) {
 /** true si a la cotizacion le queda menos del margen (o ya vencio): el checkout la rechazaria. */
 export const porVencer = (expira, ahora = Date.now(), margenMs = 60000) => Boolean(expira) && new Date(expira).getTime() - ahora < margenMs;
 
+/**
+ * Una llamada por clave cada `ms`: mientras una esta en vuelo, o termino hace menos de `ms`, se
+ * devuelve la misma promesa (tambien si fallo). Asi el polling de varias pantallas no martilla a Reap.
+ */
+export function crearThrottle(ms, reloj = Date.now) {
+  const ultimas = new Map();
+  return (clave, fn) => {
+    const u = ultimas.get(clave);
+    if (u && (u.enVuelo || reloj() - u.en < ms)) return u.promesa;
+    const entrada = { enVuelo: true, en: 0 };
+    entrada.promesa = Promise.resolve().then(fn).finally(() => { entrada.enVuelo = false; entrada.en = reloj(); });
+    entrada.promesa.catch(() => {}); // quien llama maneja el error; aqui solo se evita el aviso de promesa sin manejar
+    ultimas.set(clave, entrada);
+    return entrada.promesa;
+  };
+}

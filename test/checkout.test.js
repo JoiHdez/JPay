@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { leerCheckout, cierreDelCheckout, desglose, porVencer, NO_SE_COBRO } from '../src/checkout.js';
+import { leerCheckout, cierreDelCheckout, desglose, porVencer, crearThrottle, NO_SE_COBRO } from '../src/checkout.js';
 import { preAsiento, cuadra } from '../src/ledger.js';
 
 // checkout-completed.json es la respuesta de ejemplo de GET /agentic/checkouts/:id en
@@ -107,4 +107,24 @@ test('porVencer: recotiza con menos de 60 s o ya vencida', () => {
   assert.equal(porVencer('2026-10-10T00:00:59Z', ahora), true);
   assert.equal(porVencer('2026-10-09T23:59:00Z', ahora), true);
   assert.equal(porVencer(null, ahora), false);
+});
+
+test('throttle: una llamada por clave cada 3 s, en vuelo o resuelta, tambien si fallo', async () => {
+  let t = 0;
+  const llamar = crearThrottle(3000, () => t);
+  let n = 0;
+  const leer = () => { n += 1; return Promise.resolve(n); };
+  const [a, b] = await Promise.all([llamar('chk:1', leer), llamar('chk:1', leer)]);
+  assert.deepEqual([a, b, n], [1, 1, 1]); // dos pantallas al mismo tiempo: un solo GET
+  t = 2999;
+  assert.equal(await llamar('chk:1', leer), 1);
+  assert.equal(await llamar('enr:1', leer), 2); // otra clave no espera
+  t = 3000;
+  assert.equal(await llamar('chk:1', leer), 3);
+
+  let fallas = 0;
+  const caida = () => { fallas += 1; return Promise.reject(new Error('Sin conexion con Reap')); };
+  await assert.rejects(llamar('chk:2', caida), /Sin conexion/);
+  await assert.rejects(llamar('chk:2', caida), /Sin conexion/);
+  assert.equal(fallas, 1);
 });
