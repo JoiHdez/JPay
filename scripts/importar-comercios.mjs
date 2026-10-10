@@ -5,6 +5,7 @@
 //
 // La base sale de la URI (por defecto `jpay`). La hoja se lee como CSV publico.
 import { pathToFileURL } from 'node:url';
+import dns from 'node:dns/promises';
 import { MongoClient } from 'mongodb';
 
 const HOJA = process.env.COMERCIOS_CSV_URL
@@ -52,6 +53,19 @@ export function aDocumento(r) {
   };
 }
 
+// Las URI mongodb+srv necesitan un registro SRV. En algunas maquinas Windows el resolvedor de Node
+// falla (querySrv ECONNREFUSED) aunque el del sistema funcione; ahi se usan DNS publicos.
+// ponytail: solo afecta a este proceso; si la red bloquea DNS externos, usar la URI estandar (mongodb://).
+async function asegurarDnsSrv(uri) {
+  if (!uri.startsWith('mongodb+srv://')) return;
+  const host = new URL(uri).hostname;
+  try {
+    await dns.resolveSrv(`_mongodb._tcp.${host}`);
+  } catch {
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
+  }
+}
+
 async function main() {
   if (!URI) throw new Error('Define MONGODB_URI (por ejemplo mongodb://localhost:27017/jpay).');
   const r = await fetch(HOJA, { signal: AbortSignal.timeout(30000) });
@@ -60,6 +74,7 @@ async function main() {
   const docs = filas.map((f) => aDocumento(Object.fromEntries(encabezado.map((h, i) => [h.trim(), f[i] ?? '']))))
     .filter((d) => d.comercio);
 
+  await asegurarDnsSrv(URI);
   const cliente = new MongoClient(URI);
   try {
     await cliente.connect();
