@@ -119,7 +119,8 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
 // Lee el checkout y contabiliza; src/checkout.js decide que publicar. REQUIRES_ACTION y PROCESSING
 // siguen en checkout: /api/estado y /retorno vuelven a consultar hasta COMPLETED, FAILED o EXPIRED.
 async function conciliar(intent) {
-  if (intent.estado !== 'EN_CHECKOUT' || !intent.checkoutId) return;
+  if (intent.estado !== 'EN_CHECKOUT') return;
+  if (!intent.checkoutId) return soltarReclamo(intent);
   const lectura = leerCheckout(await reapApi.consultarCheckout(intent.checkoutId));
   // Otra consulta pudo cerrar el intent mientras esta esperaba a Reap: no se publica dos veces.
   if (intent.estado !== 'EN_CHECKOUT' || !lectura.estado) return;
@@ -144,6 +145,54 @@ async function conciliar(intent) {
     if (cierre.estado === 'COMPLETADO') Object.assign(intent, { orderId: lectura.orderId, finalUsd: L.usd(lectura.finalCents) });
   }
   if (cierre?.estado || JSON.stringify([intent.checkout, intent.error]) !== antes) await guardar();
+}
+
+// Intents con una autorizacion en vuelo (en memoria: un solo proceso, ver ponytail de db).
+const autorizando = new Set();
+
+// EN_CHECKOUT sin checkoutId y sin autorizacion en vuelo: el proceso cayo entre reclamar el intent y
+// guardar la respuesta de Reap. Vuelve a APROBADO para poder reintentar; el reintento manda la misma
+// Idempotency-Key, asi que si Reap alcanzo a crear el checkout devuelve ese y no crea otro.
+async function soltarReclamo(intent) {
+  if (autorizando.has(intent.id)) return;
+  intent.estado = 'APROBADO';
+  intent.error = 'La autorizacion anterior se interrumpio antes de abrir el pago en Reap; vuelve a autorizar.';
+  await guardar();
+}
+
+// El compromiso ya reservo el tope, asi que aqui basta con que la cotizacion haya pasado el guard
+// y siga vigente.
+async function autorizar(intent, b) {
+  if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+  if (intent.cotizacion !== 'LISTA') {
+    registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
+    await guardar();
+    throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`);
+  }
+  if (intent.expira && new Date(intent.expira) <= new Date()) {
+    intent.cotizacion = 'BLOQUEADA';
+    intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
+    registrarGuard(intent, intent.guard, 'Intento de pago');
+    await guardar();
+    throw falla(409, 'La cotizacion de Reap expiro; cotiza de nuevo.');
+  }
+  if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
+  if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
+
+  intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
+  intent.error = null;
+  await guardar();
+  try {
+    const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
+    intent.checkoutId = c.id;
+    intent.checkout = { checkoutId: c.id, urlAprobacion: c.nextAction?.url || null, estadoReap: c.status, orderId: null, finalAmount: null };
+    await guardar();
+    return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
+  } catch (e) {
+    intent.estado = 'APROBADO';
+    await guardar();
+    throw e;
+  }
 }
 
 const rutas = {
@@ -239,39 +288,17 @@ const rutas = {
     return intent;
   },
 
-  // 3. Finanzas aprueba. El compromiso ya reservo el tope, asi que aqui basta con que la
-  // cotizacion haya pasado el guard y siga vigente.
+  // 3. Finanzas aprueba. Un doble clic no autoriza dos veces: mientras una autorizacion habla con
+  // Reap, la otra se rechaza.
   'POST /api/intents/aprobar': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
-    if (intent.cotizacion !== 'LISTA') {
-      registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
-      await guardar();
-      throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`);
-    }
-    if (intent.expira && new Date(intent.expira) <= new Date()) {
-      intent.cotizacion = 'BLOQUEADA';
-      intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
-      registrarGuard(intent, intent.guard, 'Intento de pago');
-      await guardar();
-      throw falla(409, 'La cotizacion de Reap expiro; cotiza de nuevo.');
-    }
-    if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
-    if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
-
-    intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
-    await guardar();
+    if (autorizando.has(intent.id)) throw falla(409, 'Ese pago ya se esta autorizando.');
+    autorizando.add(intent.id);
     try {
-      const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
-      intent.checkoutId = c.id;
-      intent.checkout = { checkoutId: c.id, urlAprobacion: c.nextAction?.url || null, estadoReap: c.status, orderId: null, finalAmount: null };
-      await guardar();
-      return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
-    } catch (e) {
-      intent.estado = 'APROBADO';
-      await guardar();
-      throw e;
+      return await autorizar(intent, b);
+    } finally {
+      autorizando.delete(intent.id);
     }
   },
 
