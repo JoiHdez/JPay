@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "J-Pay: arquitectura general",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "pago",
+        "label": "Camino de un pago",
+        "focus": [
+          "usuario",
+          "dashboard",
+          "server",
+          "reapapi",
+          "hosted"
+        ],
+        "note": "El empleado pide en el dashboard, el servidor cotiza en Reap y finanzas aprueba el cargo en la página hosted, que regresa por el túnel."
+      },
+      {
+        "id": "contabilidad",
+        "label": "Guard y ledger",
+        "focus": [
+          "server",
+          "agente",
+          "guard",
+          "ledger",
+          "estado"
+        ],
+        "note": "El agente propone, el Ledger Guard decide con reglas fijas y el ledger publica solo asientos que cuadran, con montos de Reap."
+      },
+      {
+        "id": "identidad",
+        "label": "Tarjeta y credenciales",
+        "focus": [
+          "hosted",
+          "reapapi",
+          "server",
+          "estado"
+        ],
+        "note": "La tarjeta se captura solo en la página hosted de Reap; J-Pay guarda el enrollmentId y la API key vive en .env, nunca en el agente."
+      }
+    ],
+    "legend": {
+      "entries": {
+        "frontend": {
+          "label": "Interfaz"
+        },
+        "backend": {
+          "label": "Módulo Node.js"
+        },
+        "database": {
+          "label": "Almacenamiento"
+        },
+        "external": {
+          "label": "Sistema externo"
+        }
+      }
+    }
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "cellW": 150,
+    "cellH": 64,
+    "gapX": 110,
+    "gapY": 100
+  },
+  "components": [
+    {
+      "id": "hosted",
+      "type": "external",
+      "label": "Páginas hosted de Reap",
+      "sublabel": "tarjeta y aprobación del cargo",
+      "row": 0,
+      "col": 1,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "reapapi",
+      "type": "external",
+      "label": "Reap Agentic API",
+      "sublabel": "sandbox SG, Reap-Version 2025-02-14",
+      "row": 0,
+      "col": 2,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "usuario",
+      "type": "external",
+      "label": "Empleado y finanzas",
+      "sublabel": "navegador web",
+      "row": 1,
+      "col": 0,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "dashboard",
+      "type": "frontend",
+      "label": "Dashboard J-Pay",
+      "sublabel": "public/index.html",
+      "row": 1,
+      "col": 1,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "Servidor J-Pay",
+      "sublabel": "Node 20.6+, node:http, /api/*",
+      "row": 1,
+      "col": 2,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "estado",
+      "type": "database",
+      "label": "Estado local",
+      "sublabel": "data/jpay.json",
+      "row": 1,
+      "col": 3,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "agente",
+      "type": "backend",
+      "label": "Agente de compras",
+      "sublabel": "agente.js, propone",
+      "row": 2,
+      "col": 1,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "guard",
+      "type": "backend",
+      "label": "Ledger Guard",
+      "sublabel": "guard.js, 12 reglas fijas",
+      "row": 2,
+      "col": 2,
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "backend",
+      "label": "Ledger partida doble",
+      "sublabel": "ledger.js, asientos y cierre",
+      "row": 2,
+      "col": 3,
+      "size": [
+        150,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "J-Pay local + túnel cloudflared (solo sandbox)",
+      "wraps": [
+        "dashboard",
+        "server",
+        "estado",
+        "agente",
+        "guard",
+        "ledger"
+      ],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "Backend: credenciales de Reap y asientos que cuadran",
+      "wraps": [
+        "server",
+        "guard",
+        "ledger"
+      ],
+      "pad": 12
+    }
+  ],
+  "connections": [
+    {
+      "from": "usuario",
+      "to": "dashboard",
+      "label": "HTTPS (túnel)",
+      "variant": "emphasis"
+    },
+    {
+      "from": "dashboard",
+      "to": "server",
+      "label": "REST /api",
+      "variant": "emphasis"
+    },
+    {
+      "from": "server",
+      "to": "estado",
+      "label": "lee y escribe",
+      "variant": "emphasis"
+    },
+    {
+      "from": "server",
+      "to": "reapapi",
+      "label": "search, quotes, checkouts",
+      "variant": "emphasis",
+      "labelDy": -20
+    },
+    {
+      "from": "usuario",
+      "to": "hosted",
+      "label": "captura tarjeta y aprueba",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "from": "hosted",
+      "to": "dashboard",
+      "label": "returnUrl",
+      "variant": "dashed",
+      "labelDy": 24
+    },
+    {
+      "from": "server",
+      "to": "agente",
+      "label": "propuesta"
+    },
+    {
+      "from": "server",
+      "to": "guard",
+      "label": "revisa",
+      "labelDy": 24
+    },
+    {
+      "from": "server",
+      "to": "ledger",
+      "label": "publica"
+    }
+  ]
+}
