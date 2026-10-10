@@ -55,7 +55,7 @@
 </main>
 
 <script type="module">
-import { $, el, resumenCompra, pintarPresupuestos } from '/comun.js';
+import { $, el, money, resumenCompra, pintarPresupuestos } from '/comun.js';
 import { explicarError, errorHttp, resultadoAutorizar, restante, cuentaRegresiva, motivosBloqueo } from '/errores.js';
 
 // La lista se repinta cada 6 s; esto sobrevive al repintado.
@@ -90,6 +90,11 @@ async function cargar() {
   $('btnTarjeta').hidden = d.tarjeta === 'ACTIVE';
   $('pagos').textContent = d.pagos.completados ? `${d.pagos.conAsiento}/${d.pagos.completados} pagos con asiento · ${d.pagos.conFactura} con factura` : '';
   pintarPresupuestos($('presupuestos'), d.presupuestos);
+  d.presupuestos.forEach((p, indice) => {
+    const centro = $('presupuestos').children[indice];
+    centro.querySelector('.muted').textContent = `Disponible ${money(p.disponible)} de ${money(p.presupuesto)}`;
+    centro.firstElementChild.after(el('div', { className: 'muted', textContent: `Comprometido ${money(p.comprometido)} · Consumido ${money(p.consumido)}` }));
+  });
 
   relojes = [];
   const cont = $('intents');
