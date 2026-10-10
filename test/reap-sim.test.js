@@ -1,10 +1,21 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { simulado as sim } from '../src/reap-sim.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { crearSimulado } from '../src/reap-sim.js';
 import { revisar } from '../src/guard.js';
 import { preAsiento, cuadra, centavos } from '../src/ledger.js';
 import { proponer } from '../src/agente.js';
 import { CATEGORIAS } from '../src/catalogo.js';
+
+// Cada prueba usa su propio JSON en un directorio temporal; nunca toca data/reap-sim.json.
+const dir = await mkdtemp(join(tmpdir(), 'jpay-sim-'));
+after(() => rm(dir, { recursive: true, force: true }));
+let n = 0;
+const archivoNuevo = () => join(dir, `sim-${++n}.json`);
+const sim = crearSimulado({ archivo: archivoNuevo() });
+const RETORNO = 'http://localhost:3013/retorno?intent=INT-prueba';
 
 // Los presets de public/solicitante.html: sin red, cada uno debe cotizar y pasar el Ledger Guard.
 const PRESETS = [
@@ -54,4 +65,21 @@ test('elegir envio recalcula el total y marca la opcion, y el pre-asiento sigue 
   assert.ok(cuadra(preAsiento({ cc: 'OPS', cuenta: 5100, breakdown: exp.amountBreakdown })));
   await assert.rejects(sim.elegirEnvio(q.id, 'dron'), { status: 400, codigo: 'AGENTIC_REQUEST_REJECTED' });
   await assert.rejects(sim.elegirEnvio('quo_no_existe', 'std'), { status: 404 });
+});
+
+test('el estado sobrevive un reinicio: tarjeta ACTIVE, quote y checkout siguen ahi', async () => {
+  const archivo = archivoNuevo();
+  const antes = crearSimulado({ archivo });
+  const e = await antes.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: 'compras@jpay.demo', returnUrl: RETORNO });
+  const q = await antes.cotizar({ variantId: 'var_prd_sim_9', cantidad: 1, clave: 'INT-1-quo-base-0' });
+  const c = await antes.checkout({ quoteId: q.id, enrollmentId: e.id, returnUrl: RETORNO, clave: 'INT-1-chk' });
+
+  const despues = crearSimulado({ archivo }); // como si el servidor se reiniciara
+  assert.equal((await despues.enrollment(e.id)).status, 'ACTIVE');
+  assert.equal((await despues.consultarCheckout(c.id)).status, 'COMPLETED');
+  // La misma Idempotency-Key devuelve lo mismo, aun despues del reinicio.
+  assert.equal((await despues.cotizar({ variantId: 'var_prd_sim_9', cantidad: 1, clave: 'INT-1-quo-base-0' })).id, q.id);
+  assert.equal((await despues.checkout({ quoteId: q.id, enrollmentId: e.id, returnUrl: RETORNO, clave: 'INT-1-chk' })).id, c.id);
+  // Un checkout que el simulador no conoce se da por expirado en vez de reventar la conciliacion.
+  assert.deepEqual(await despues.consultarCheckout('chk_sim_perdido'), { id: 'chk_sim_perdido', status: 'EXPIRED' });
 });

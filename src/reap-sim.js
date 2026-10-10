@@ -1,7 +1,13 @@
 // Cliente simulado de Reap Agentic Payments: el plan B de la demo si cae la red del venue.
 //
-// Misma interfaz y mismas formas de respuesta que el real; src/reap.js elige uno u otro.
+// Misma interfaz y mismas formas de respuesta que el real (src/reap.js elige uno u otro). El
+// estado vive en data/reap-sim.json para que un reinicio no deje la tarjeta EXPIRED ni pierda
+// checkouts.
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ponytail: catalogo fijo con productos de la lista oficial de comercios; basta para ensayar sin red.
 // Del 6 en adelante cubren los presets de la UI dentro de su tope, aun con la cantidad maxima.
@@ -16,15 +22,16 @@ export const CATALOGO = [
   { id: 'prd_sim_8', merchant: 'Public Goods', name: 'Organic Cotton Tote Bag', price: 18, tags: ['tote', 'bolsa', 'tela'] },
   { id: 'prd_sim_9', merchant: 'ZM Desktop', name: 'Modular Space-Saving Laptop Stand - Black Walnut', price: 58, tags: ['laptop', 'stand', 'soporte'] },
 ];
-const memoria = new Map();
 
 const ENVIOS = [
   { id: 'std', name: 'Standard', centavos: 599 },
   { id: 'exp', name: 'Express', centavos: 1299 },
 ];
+const QUOTE_MS = 15 * 60000;
 
 const usd = (centavos) => ({ amount: centavos / 100, currency: 'USD' });
 const centavos = (m) => Math.round(Number(m) * 100);
+const copia = (o) => structuredClone(o);
 
 // En centavos para que subtotal + envio + impuesto sumen exacto finalAmount; si no, el pre-asiento descuadra.
 function desglose(subtotal, envio) {
@@ -37,6 +44,12 @@ function desglose(subtotal, envio) {
   };
 }
 
+// Como Reap: lo mas parecido a la busqueda sale primero, y el servidor cotiza el primero que surta.
+const relevancia = (p, q) => {
+  const texto = `${p.name} ${p.tags.join(' ')}`.toLowerCase();
+  return q.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && texto.includes(w)).length;
+};
+
 // Mismo formato de error que el cliente real, para que server.js lo trate igual.
 function fallaReap(status, ruta, code, message) {
   const e = new Error(`Reap ${status} en ${ruta}: ${code} ${message}`);
@@ -45,75 +58,123 @@ function fallaReap(status, ruta, code, message) {
   return e;
 }
 
-// Como Reap: lo mas parecido a la busqueda sale primero, y el servidor cotiza el primero que surta.
-const relevancia = (p, q) => {
-  const texto = `${p.name} ${p.tags.join(' ')}`.toLowerCase();
-  return q.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && texto.includes(w)).length;
-};
+/** @param archivo ruta del JSON de estado; ahora() en ms, inyectable para probar vencimientos. */
+export function crearSimulado({ archivo, ahora = () => Date.now() }) {
+  let m;
+  const leer = () => {
+    if (m) return m;
+    let previo = {};
+    try {
+      previo = JSON.parse(readFileSync(archivo, 'utf8'));
+    } catch (e) {
+      if (e.code !== 'ENOENT') console.error(`reap-sim: no se pudo leer ${archivo} (${e.message}); empieza vacio.`);
+    }
+    m = { enrollments: {}, quotes: {}, checkouts: {}, claves: {}, ...previo };
+    return m;
+  };
 
-export const simulado = {
-  async crearEnrollment({ clienteId, email, returnUrl }) {
-    const id = `enr_sim_${clienteId}`;
-    memoria.set(id, { id, status: 'ACTIVE', owner: { type: 'CLIENT_REFERENCE', id: clienteId, email } });
-    return { ...memoria.get(id), status: 'REQUIRES_ACTION', nextAction: { type: 'REDIRECT', url: returnUrl } };
-  },
-  enrollment: async (id) => memoria.get(id) || { id, status: 'EXPIRED' },
-  async buscar({ query, max }) {
-    const q = query.toLowerCase();
-    const hits = CATALOGO
-      .filter((p) => p.tags.some((t) => q.includes(t)) || q.includes(p.name.toLowerCase()))
-      .filter((p) => !max || p.price <= Number(max))
-      .map((p) => ({ p, r: relevancia(p, q) }))
-      .sort((a, b) => b.r - a.r)
-      .slice(0, 5)
-      .map(({ p }) => p);
-    return {
-      id: randomUUID(),
-      products: hits.map((p) => ({
-        id: p.id,
-        merchant: { name: p.merchant },
-        name: p.name,
-        available: true,
-        previewVariant: { id: `var_${p.id}`, name: p.name, price: usd(centavos(p.price)), available: true },
-      })),
-    };
-  },
-  async cotizar({ variantId, cantidad }) {
-    const p = CATALOGO.find((x) => `var_${x.id}` === variantId);
-    if (!p) throw fallaReap(404, '/agentic/quotes', 'NOT_FOUND', `Variant ${variantId} not found`);
-    const q = {
-      id: `quo_sim_${randomUUID().slice(0, 8)}`,
-      items: [{ variantId, quantity: cantidad, name: p.name, merchant: { name: p.merchant } }],
-      shippingOptions: ENVIOS.map((o, i) => ({ id: o.id, name: o.name, selected: i === 0, price: usd(o.centavos) })),
-      amountBreakdown: desglose(centavos(p.price) * cantidad, ENVIOS[0].centavos),
-      expiresAt: new Date(Date.now() + 15 * 60000).toISOString(),
-    };
-    memoria.set(q.id, q);
-    return structuredClone(q);
-  },
-  // Como en Reap, cambiar el envio recalcula amountBreakdown y marca la opcion elegida.
-  async elegirEnvio(quoteId, shippingOptionId) {
-    const ruta = `/agentic/quotes/${quoteId}/shipping-option`;
-    const q = memoria.get(quoteId);
-    if (!q) throw fallaReap(404, ruta, 'NOT_FOUND', `Quote ${quoteId} not found`);
-    const opcion = q.shippingOptions.find((o) => o.id === shippingOptionId);
-    if (!opcion) throw fallaReap(400, ruta, 'AGENTIC_REQUEST_REJECTED', `Unknown shippingOptionId ${shippingOptionId}`);
-    for (const o of q.shippingOptions) o.selected = o.id === shippingOptionId;
-    q.amountBreakdown = desglose(centavos(q.amountBreakdown.itemsSubtotal.amount), centavos(opcion.price.amount));
-    return structuredClone(q);
-  },
-  async checkout({ quoteId, enrollmentId, returnUrl }) {
-    const q = memoria.get(quoteId);
-    const c = {
-      id: `chk_sim_${randomUUID().slice(0, 8)}`,
-      status: 'COMPLETED',
-      quoteId,
-      enrollmentId,
-      orderId: `SIM-${Date.now().toString().slice(-6)}`,
-      finalAmount: q.amountBreakdown.finalAmount,
-    };
-    memoria.set(c.id, c);
-    return { ...c, status: 'REQUIRES_ACTION', nextAction: { type: 'REDIRECT', url: returnUrl } };
-  },
-  consultarCheckout: async (id) => memoria.get(id),
-};
+  // Escrituras en fila y a un temporal que luego se renombra: si el proceso muere a media
+  // escritura, el JSON anterior queda entero.
+  let cola = Promise.resolve();
+  const guardar = () => {
+    const escritura = cola.catch(() => {}).then(async () => {
+      await mkdir(dirname(archivo), { recursive: true });
+      await writeFile(`${archivo}.tmp`, JSON.stringify(leer(), null, 2));
+      await rename(`${archivo}.tmp`, archivo);
+    });
+    cola = escritura;
+    return escritura;
+  };
+
+  return {
+    async crearEnrollment({ clienteId, email, returnUrl }) {
+      const id = `enr_sim_${clienteId}`;
+      leer().enrollments[id] = { id, status: 'ACTIVE', owner: { type: 'CLIENT_REFERENCE', id: clienteId, email } };
+      await guardar();
+      return { ...copia(m.enrollments[id]), status: 'REQUIRES_ACTION', nextAction: { type: 'REDIRECT', url: returnUrl } };
+    },
+
+    enrollment: async (id) => copia(leer().enrollments[id] || { id, status: 'EXPIRED' }),
+
+    async buscar({ query, max }) {
+      const q = query.toLowerCase();
+      const hits = CATALOGO
+        .filter((p) => p.tags.some((t) => q.includes(t)) || q.includes(p.name.toLowerCase()))
+        .filter((p) => !max || p.price <= Number(max))
+        .map((p) => ({ p, r: relevancia(p, q) }))
+        .sort((a, b) => b.r - a.r)
+        .slice(0, 5)
+        .map(({ p }) => p);
+      return {
+        id: randomUUID(),
+        products: hits.map((p) => ({
+          id: p.id,
+          merchant: { name: p.merchant },
+          name: p.name,
+          available: true,
+          previewVariant: { id: `var_${p.id}`, name: p.name, price: usd(centavos(p.price)), available: true },
+        })),
+      };
+    },
+
+    async cotizar({ variantId, cantidad, clave }) {
+      const datos = leer();
+      if (clave && datos.claves[clave]) return copia(datos.quotes[datos.claves[clave]]);
+      const p = CATALOGO.find((x) => `var_${x.id}` === variantId);
+      if (!p) throw fallaReap(404, '/agentic/quotes', 'NOT_FOUND', `Variant ${variantId} not found`);
+      const q = {
+        id: `quo_sim_${randomUUID().slice(0, 8)}`,
+        items: [{ variantId, quantity: cantidad, name: p.name, merchant: { name: p.merchant } }],
+        shippingOptions: ENVIOS.map((o, i) => ({ id: o.id, name: o.name, selected: i === 0, price: usd(o.centavos) })),
+        amountBreakdown: desglose(centavos(p.price) * cantidad, ENVIOS[0].centavos),
+        expiresAt: new Date(ahora() + QUOTE_MS).toISOString(),
+      };
+      datos.quotes[q.id] = q;
+      if (clave) datos.claves[clave] = q.id;
+      await guardar();
+      return copia(q);
+    },
+
+    // Como en Reap, cambiar el envio recalcula amountBreakdown y marca la opcion elegida.
+    async elegirEnvio(quoteId, shippingOptionId) {
+      const ruta = `/agentic/quotes/${quoteId}/shipping-option`;
+      const q = leer().quotes[quoteId];
+      if (!q) throw fallaReap(404, ruta, 'NOT_FOUND', `Quote ${quoteId} not found`);
+      const opcion = q.shippingOptions.find((o) => o.id === shippingOptionId);
+      if (!opcion) throw fallaReap(400, ruta, 'AGENTIC_REQUEST_REJECTED', `Unknown shippingOptionId ${shippingOptionId}`);
+      for (const o of q.shippingOptions) o.selected = o.id === shippingOptionId;
+      q.amountBreakdown = desglose(centavos(q.amountBreakdown.itemsSubtotal.amount), centavos(opcion.price.amount));
+      await guardar();
+      return copia(q);
+    },
+
+    async checkout({ quoteId, enrollmentId, returnUrl, clave }) {
+      const datos = leer();
+      if (clave && datos.claves[clave]) return copia(datos.checkouts[datos.claves[clave]]);
+      const q = datos.quotes[quoteId];
+      if (!q) throw fallaReap(404, '/agentic/checkouts', 'NOT_FOUND', `Quote ${quoteId} not found`);
+      if (new Date(q.expiresAt).getTime() <= ahora()) throw fallaReap(409, '/agentic/checkouts', 'QUOTE_EXPIRED', `Quote ${quoteId} expired`);
+      const id = `chk_sim_${randomUUID().slice(0, 8)}`;
+      datos.checkouts[id] = {
+        id,
+        status: 'COMPLETED',
+        quoteId,
+        enrollmentId,
+        orderId: `SIM-${String(ahora()).slice(-6)}`,
+        finalAmount: q.amountBreakdown.finalAmount,
+      };
+      if (clave) datos.claves[clave] = id;
+      await guardar();
+      return { ...copia(datos.checkouts[id]), status: 'REQUIRES_ACTION', nextAction: { type: 'REDIRECT', url: returnUrl } };
+    },
+
+    // Un checkout que el simulador no conoce (de antes de persistir, o si se borro el JSON) se da
+    // por expirado, como el enrollment: asi el intent libera su compromiso en vez de atorarse.
+    async consultarCheckout(id) {
+      const c = leer().checkouts[id];
+      return c ? copia(c) : { id, status: 'EXPIRED' };
+    },
+  };
+}
+
+export const simulado = crearSimulado({ archivo: fileURLToPath(new URL('../data/reap-sim.json', import.meta.url)) });
