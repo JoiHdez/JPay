@@ -6,6 +6,11 @@
 <title>J-Pay · Finanzas</title>
 <link rel="stylesheet" href="/comun.css">
 <style>
+  /* Mismos colores que .barra .g y .barra .c de comun.css; el fondo de la barra es lo disponible. */
+  .leyenda { display: flex; gap: 12px; flex-wrap: wrap; }
+  .leyenda i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--line); margin-right: 4px; vertical-align: -1px; }
+  .leyenda i.g { background: var(--acc); }
+  .leyenda i.c { background: var(--warn); }
   .acciones { margin-top: 8px; }
   .motivos { margin-top: 6px; }
   .motivos .viol { margin-top: 2px; }
@@ -33,7 +38,7 @@
     <section>
       <h2>Presupuesto por centro de costo</h2>
       <div id="presupuestos"></div>
-      <div class="muted">Azul: consumido · Naranja: comprometido</div>
+      <div class="muted leyenda"><span><i class="g"></i>Consumido</span><span><i class="c"></i>Comprometido</span><span><i></i>Disponible</span></div>
     </section>
 
   </div>
