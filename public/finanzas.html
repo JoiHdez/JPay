@@ -18,6 +18,9 @@
   .err details { color: var(--tx2); font-size: 12px; margin-top: 4px; }
   .err summary { cursor: pointer; }
   .err pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; font-size: 11px; }
+  .aviso { margin-top: 8px; padding: 6px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+  .aviso details { font-weight: 400; font-size: 12px; margin-top: 4px; }
+  .aviso pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -52,8 +55,8 @@
 </main>
 
 <script type="module">
-import { $, el, api, resumenCompra, pintarPresupuestos } from '/comun.js';
-import { explicarError, restante, cuentaRegresiva, motivosBloqueo } from '/errores.js';
+import { $, el, resumenCompra, pintarPresupuestos } from '/comun.js';
+import { explicarError, errorHttp, resultadoAutorizar, restante, cuentaRegresiva, motivosBloqueo } from '/errores.js';
 
 // La lista se repinta cada 6 s; esto sobrevive al repintado.
 const enCurso = new Set();        // ids con una accion en vuelo
@@ -61,11 +64,25 @@ const erroresLocales = new Map(); // id -> ultimo error de recotizar o autorizar
 const abiertos = new Set();       // ids con el "Detalle tecnico" abierto
 let tarjetaReap = null;           // raiz `tarjeta` de /api/estado
 let relojes = [];                 // una funcion por compra pendiente; corre cada segundo
+// Compras autorizadas desde aqui (o de vuelta de Reap) cuyo resultado se muestra en su tarjeta.
+const seguidas = new Set([new URLSearchParams(location.search).get('intent')].filter(Boolean));
+const perdidas = new Map();       // id -> error de una autorizacion cuya respuesta no llego
 
-const claro = (e) => explicarError(e.message)?.claro || '';
+// Como api() de comun.js, pero si la respuesta no es el JSON de J-Pay (el tunel de Cloudflare
+// cambia cualquier 502 por su pagina HTML) el error guarda status y cuerpo para el detalle.
+async function pedir(ruta, cuerpo) {
+  const r = await fetch(ruta, cuerpo ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) } : {});
+  const texto = await r.text();
+  let d = null;
+  try { d = JSON.parse(texto); } catch { /* no es JSON */ }
+  if (r.ok && d) return d;
+  throw new Error(typeof d?.error === 'string' ? d.error : errorHttp(ruta, r.status, texto));
+}
+
+const errorGlobal = (e) => $('error').replaceChildren(...[bloqueError('global', e.message)].filter(Boolean));
 
 async function cargar() {
-  const d = await api('/api/estado');
+  const d = await pedir('/api/estado');
   tarjetaReap = d.tarjeta;
   $('modo').textContent = `Reap ${d.modo}`;
   $('tarjeta').textContent = `Tarjeta: ${d.tarjeta || 'sin registrar'}`;
@@ -99,7 +116,11 @@ function tarjeta(i) {
   const bloq = i.cotizacion === 'BLOQUEADA' && pendiente;
   // El error y las violaciones del guard van abajo, junto a los botones.
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra({ ...i, error: null, guard: null }));
-  if (!pendiente) return caja;
+  if (!pendiente) {
+    const r = seguidas.has(i.id) ? resultadoAutorizar(null, i) : null;
+    if (r) caja.append(avisoPago(i, r.aviso));
+    return caja;
+  }
 
   const reloj = el('span', { className: 'chip' });
   const recotizar = el('button', { className: 'sec', textContent: 'Recotizar' });
@@ -107,8 +128,8 @@ function tarjeta(i) {
   const lista = el('ul', { className: 'viol' });
   const motivos = el('div', { className: 'motivos' }, el('div', { className: 'muted', textContent: 'No se puede autorizar todavía:' }), lista);
 
-  recotizar.onclick = () => ejecutar(i.id, async () => { await api('/api/intents/recotizar', { id: i.id }); });
-  autorizar.onclick = () => ejecutar(i.id, async () => { location.href = (await api('/api/intents/aprobar', { id: i.id })).url; return true; });
+  recotizar.onclick = () => ejecutar(i.id, async () => { await pedir('/api/intents/recotizar', { id: i.id }); });
+  autorizar.onclick = () => ejecutar(i.id, () => autorizarPago(i.id));
 
   // El error de la cotizacion inicial solo vale mientras siga sin cotizacion.
   const error = erroresLocales.get(i.id) || (i.cotizacion === 'ERROR' ? i.error : null);
@@ -140,6 +161,28 @@ function tarjeta(i) {
   return caja;
 }
 
+// Si Reap pide aprobar en su pagina, se va ahi. Si no hay url, o la respuesta se perdio en el
+// camino, el pago pudo haberse creado igual: se lee el estado real antes de mostrar un error.
+async function autorizarPago(id) {
+  let respuesta = null;
+  let fallo = null;
+  try { respuesta = await pedir('/api/intents/aprobar', { id }); } catch (e) { fallo = e; }
+  if (respuesta?.url) { location.href = respuesta.url; return true; }
+  const d = await pedir('/api/estado').catch(() => null);
+  if (!resultadoAutorizar(respuesta, d?.intents.find((x) => x.id === id))) throw fallo || new Error('La autorización no devolvió la página de Reap ni cambió el estado de la compra.');
+  seguidas.add(id);
+  if (fallo) perdidas.set(id, fallo.message);
+}
+
+// "Pagado · orden X · cobrado $Y" (o en espera de Reap), con el error que se perdio plegado.
+function avisoPago(i, texto) {
+  const caja = el('div', { className: `aviso ${i.estado === 'COMPLETADO' ? 'ok' : 'warn'}`, textContent: texto });
+  if (perdidas.has(i.id)) {
+    caja.append(el('details', {}, el('summary', { textContent: 'Detalle técnico: la respuesta de la autorización no llegó' }), el('pre', { textContent: perdidas.get(i.id) })));
+  }
+  return caja;
+}
+
 // Corre una accion de la compra. Si falla, el error queda en su tarjeta (sin alert).
 // fn devuelve true cuando se va a otra pagina (Reap): ahi no se repinta.
 async function ejecutar(id, fn) {
@@ -152,7 +195,7 @@ async function ejecutar(id, fn) {
     erroresLocales.set(id, e.message);
   }
   enCurso.delete(id);
-  await cargar().catch((e) => { $('error').textContent = claro(e); });
+  await cargar().catch(errorGlobal);
 }
 
 function tic() {
@@ -161,12 +204,12 @@ function tic() {
 }
 
 $('btnTarjeta').onclick = async () => {
-  $('error').textContent = '';
-  try { const r = await api('/api/tarjeta', {}); if (r.url) location.href = r.url; else cargar(); }
-  catch (e) { $('error').textContent = claro(e); }
+  $('error').replaceChildren();
+  try { const r = await pedir('/api/tarjeta', {}); if (r.url) location.href = r.url; else cargar(); }
+  catch (e) { errorGlobal(e); }
 };
 
-cargar().catch((e) => { $('error').textContent = claro(e); });
+cargar().catch(errorGlobal);
 setInterval(() => cargar().catch(() => {}), 6000);
 setInterval(tic, 1000);
 </script>
