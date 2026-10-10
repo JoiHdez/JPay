@@ -1,0 +1,3 @@
+# Los XML de prueba de CFDI se comparan con fragmentos que usan \n; en Windows (core.autocrlf)
+# se convertian a \r\n y la prueba de traslados de IVA fallaba. Se fijan en LF en todos los sistemas.
+test/fixtures/*.xml text eol=lf
