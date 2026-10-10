@@ -153,7 +153,7 @@ JPay/
 
 ### Requisitos
 
-- Node 20.6 o superior (sin dependencias, no hay `npm install`)
+- Node 22.9 o superior (sin dependencias, no hay `npm install`)
 - API key del sandbox de Reap (se entrega en persona al líder del equipo)
 - URL **HTTPS** pública para los `returnUrl` de Reap: túnel o deploy
 
@@ -164,6 +164,8 @@ cp .env.example .env
 npm test
 npm start
 ```
+
+Para desarrollar, `npm run dev` reinicia el servidor solo cada vez que cambia un archivo de `src/` (`node --watch`). `public/index.html` no necesita reinicio: basta recargar la página.
 
 Sin `REAP_API_KEY` todo corre simulado, con respuestas que imitan las de Reap, para ensayar sin red. Con la key llena en `.env`, corre contra el sandbox real.
 
