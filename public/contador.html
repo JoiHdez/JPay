@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J-Pay · Contador</title>
+<link rel="stylesheet" href="/comun.css">
+</head>
+<body>
+<!-- Pantalla del contador: ledger, facturas y cierre. Dueño: por asignar. -->
+<header>
+  <a class="logo" href="/">J</a>
+  <div><h1>J-Pay · Contador</h1><div class="sub">Ledger en vivo, facturas y cierre de mes</div></div>
+  <div class="der">
+    <span class="muted" id="modo"></span>
+    <a href="/solicitante.html">Pedir</a>
+    <a href="/finanzas.html">Finanzas</a>
+  </div>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>Adjuntar factura</h2>
+      <div class="dos">
+        <div><label>Orden de Reap</label><input id="fOrden"></div>
+        <div><label>Total (USD)</label><input id="fTotal" type="number" step="0.01"></div>
+      </div>
+      <label>Folio / UUID CFDI</label><input id="fFolio" maxlength="60">
+      <div style="margin-top:10px"><button class="sec" id="btnFactura">Adjuntar al asiento</button></div>
+      <div class="err" id="fMsg"></div>
+    </section>
+
+    <section>
+      <h2>Cierre de mes <button id="btnCierre">Cerrar mes</button></h2>
+      <div id="cierre" class="muted">Liquida la tarjeta corporativa y genera balanza y P&amp;L.</div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Pagos <span class="muted" id="pagos"></span></h2>
+      <div class="muted">Cada pago completado ya nace con su asiento; aquí solo se adjunta la factura y se cierra el mes.</div>
+      <div class="err" id="error"></div>
+    </section>
+
+    <div class="grid2">
+      <section>
+        <h2>Ledger en vivo <span class="chip" id="cuadra"></span></h2>
+        <div class="scroll"><table><thead><tr><th>Asiento</th><th>Cuenta</th><th>CC</th><th class="n">Debe</th><th class="n">Haber</th></tr></thead><tbody id="ledger"></tbody></table></div>
+      </section>
+      <section>
+        <h2>Balanza de comprobación</h2>
+        <table><thead><tr><th>Cuenta</th><th class="n">Debe</th><th class="n">Haber</th><th class="n">Saldo</th></tr></thead><tbody id="balanza"></tbody></table>
+      </section>
+    </div>
+
+    <section>
+      <h2>Ledger Guard</h2>
+      <div class="scroll" style="max-height:260px"><table><thead><tr><th>Hora</th><th>Compra</th><th>Contexto</th><th>Decisión</th></tr></thead><tbody id="guard"></tbody></table></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { $, el, api, money, usd } from '/comun.js';
+
+let catalogo = null;
+const vistos = new Set();
+
+async function cargar() {
+  const d = await api('/api/estado');
+  catalogo ??= d.catalogo;
+  $('modo').textContent = `Reap ${d.modo}`;
+  $('pagos').textContent = d.pagos.completados ? `${d.pagos.conAsiento}/${d.pagos.completados} pagos con asiento · ${d.pagos.conFactura} con factura` : '';
+
+  const filas = [];
+  for (const a of d.asientos) {
+    const nuevo = !vistos.has(a.id);
+    a.lineas.forEach((l, k) => filas.push(el('tr', { className: nuevo ? 'nuevo' : '' },
+      el('td', {}, k === 0 ? el('div', {}, el('strong', { textContent: `${a.id} ${a.tipo}` }), el('div', { className: 'muted', textContent: a.concepto || '' })) : ''),
+      el('td', { textContent: `${l.cuenta} ${catalogo.cuentas[l.cuenta].nombre}` }),
+      el('td', { textContent: l.cc || '' }),
+      el('td', { className: 'n', textContent: l.debe ? money(l.debe) : '' }),
+      el('td', { className: 'n', textContent: l.haber ? money(l.haber) : '' }))));
+  }
+  for (const a of d.asientos) vistos.add(a.id);
+  $('ledger').replaceChildren(...filas);
+  $('cuadra').textContent = d.balanza.cuadra ? 'Cuadra' : 'No cuadra';
+  $('cuadra').className = `chip ${d.balanza.cuadra ? 'ok' : 'bad'}`;
+
+  $('balanza').replaceChildren(...d.balanza.filas.map((f) => el('tr', {},
+    el('td', { textContent: `${f.cuenta} ${f.nombre}` }), el('td', { className: 'n', textContent: money(f.debe) }), el('td', { className: 'n', textContent: money(f.haber) }), el('td', { className: 'n', textContent: money(f.saldo) }))),
+    el('tr', {}, el('td', {}, el('strong', { textContent: 'Total' })), el('td', { className: 'n', textContent: money(d.balanza.total.debe) }), el('td', { className: 'n', textContent: money(d.balanza.total.haber) }), el('td', {})));
+
+  $('guard').replaceChildren(...d.guard.map((g) => el('tr', {},
+    el('td', { className: 'muted', textContent: new Date(g.fecha).toLocaleTimeString('es-MX') }),
+    el('td', { textContent: `${g.cc} · ${g.busqueda}` }),
+    el('td', { className: 'muted', textContent: g.contexto }),
+    el('td', {}, g.permitido ? el('span', { className: 'chip ok', textContent: 'Permitido' }) : el('div', {}, el('span', { className: 'chip bad', textContent: 'Bloqueado' }), el('div', { className: 'muted', textContent: g.violaciones.map((v) => v.codigo).join(', ') }))))));
+}
+
+$('btnFactura').onclick = async () => {
+  $('fMsg').textContent = '';
+  try {
+    const r = await api('/api/facturas', { orderId: $('fOrden').value, total: Number($('fTotal').value), folio: $('fFolio').value });
+    $('fMsg').style.color = 'var(--ok)';
+    $('fMsg').textContent = `Adjuntada a ${r.asientos.join(', ')}. Three-way match cerrado.`;
+    cargar();
+  } catch (e) { $('fMsg').style.color = ''; $('fMsg').textContent = e.message; }
+};
+$('btnCierre').onclick = async () => {
+  try {
+    const r = await api('/api/cierre', {});
+    $('cierre').replaceChildren(
+      el('div', {}, el('strong', { textContent: `Liquidación de tarjeta: ${usd(r.liquidacion)}` }), ' ', el('span', { className: `chip ${r.balanza.cuadra ? 'ok' : 'bad'}`, textContent: r.balanza.cuadra ? 'Balanza cuadra' : 'No cuadra' })),
+      el('table', {}, el('thead', {}, el('tr', {}, el('th', { textContent: 'P&L por centro de costo' }), el('th', { className: 'n', textContent: 'Gasto' }))),
+        el('tbody', {}, ...r.pnl.map((p) => el('tr', {}, el('td', { textContent: p.cc }), el('td', { className: 'n', textContent: money(p.total) }))))));
+    cargar();
+  } catch (e) { $('cierre').textContent = e.message; }
+};
+
+cargar().catch((e) => { $('error').textContent = e.message; });
+setInterval(() => cargar().catch(() => {}), 6000);
+</script>
+</body>
+</html>

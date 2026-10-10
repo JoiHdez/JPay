@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J-Pay · Finanzas</title>
+<link rel="stylesheet" href="/comun.css">
+</head>
+<body>
+<!-- Pantalla de quien autoriza el pago. Dueño: rama jordy/autorizador. -->
+<header>
+  <a class="logo" href="/">J</a>
+  <div><h1>J-Pay · Finanzas</h1><div class="sub">Autoriza los pagos que el agente cotizó</div></div>
+  <div class="der">
+    <span class="muted" id="modo"></span>
+    <span class="chip warn" id="tarjeta">Tarjeta: ...</span>
+    <button class="sec" id="btnTarjeta">Registrar tarjeta en Reap</button>
+    <a href="/solicitante.html">Pedir</a>
+    <a href="/contador.html">Contador</a>
+  </div>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>Presupuesto por centro de costo</h2>
+      <div id="presupuestos"></div>
+      <div class="muted">Azul: consumido · Naranja: comprometido</div>
+    </section>
+
+  </div>
+
+  <div>
+    <section>
+      <h2>Compras por autorizar <span class="muted" id="pagos"></span></h2>
+      <div id="intents" class="muted">Sin compras todavía.</div>
+      <div class="err" id="error"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { $, el, api, accion, resumenCompra, pintarPresupuestos } from '/comun.js';
+
+async function cargar() {
+  const d = await api('/api/estado');
+  $('modo').textContent = `Reap ${d.modo}`;
+  $('tarjeta').textContent = `Tarjeta: ${d.tarjeta || 'sin registrar'}`;
+  $('tarjeta').className = `chip ${d.tarjeta === 'ACTIVE' ? 'ok' : 'warn'}`;
+  $('btnTarjeta').hidden = d.tarjeta === 'ACTIVE';
+  $('pagos').textContent = d.pagos.completados ? `${d.pagos.conAsiento}/${d.pagos.completados} pagos con asiento · ${d.pagos.conFactura} con factura` : '';
+  pintarPresupuestos($('presupuestos'), d.presupuestos);
+
+  const cont = $('intents');
+  cont.replaceChildren();
+  if (!d.intents.length) cont.textContent = 'Sin compras todavía.';
+  for (const i of d.intents) cont.append(tarjeta(i));
+
+}
+
+function tarjeta(i) {
+  const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
+  const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra(i));
+  if (i.estado === 'APROBADO') {
+    const aprobar = el('button', { textContent: 'Autorizar y pagar con Reap' });
+    aprobar.onclick = () => accion(aprobar, async () => { location.href = (await api('/api/intents/aprobar', { id: i.id })).url; }, $('error'));
+    caja.append(el('div', { className: 'fila', style: 'margin-top:8px' }, aprobar));
+  }
+  return caja;
+}
+
+$('btnTarjeta').onclick = async () => {
+  try { const r = await api('/api/tarjeta', {}); if (r.url) location.href = r.url; else cargar(); }
+  catch (e) { $('error').textContent = e.message; }
+};
+
+cargar().catch((e) => { $('error').textContent = e.message; });
+setInterval(() => cargar().catch(() => {}), 6000);
+</script>
+</body>
+</html>

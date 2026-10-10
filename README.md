@@ -36,7 +36,15 @@ Con pagos agénticos, el agente sabe *qué* compra, *por qué*, *a quién*, *con
 
 ## 3. Qué hace J-Pay
 
-Un agente de compras con un ledger de partida doble en vivo. Hoy el pedido entra desde el dashboard; el bot de Telegram es el siguiente paso (ver §11).
+Un agente de compras con un ledger de partida doble en vivo y tres pantallas, una por rol, con segregación de funciones: quien pide no autoriza y quien autoriza no registra.
+
+| Rol | Pantalla | Qué hace |
+|---|---|---|
+| Solicitante | `/solicitante.html` | pide la compra, ve el estado y comparte documentos del proveedor |
+| Finanzas | `/finanzas.html` | autoriza el pago en la página hosted de Reap y registra la tarjeta |
+| Contador | `/contador.html` | ledger en vivo, balanza, log del Ledger Guard, facturas y cierre de mes |
+
+El contrato entre roles está en [`docs/CONTRATO.md`](docs/CONTRATO.md). Hoy el pedido entra desde la pantalla del solicitante; el bot de Telegram es el siguiente paso (ver §11).
 
 ### 3.1 Ciclo contable completo de un pago agéntico
 
@@ -89,11 +97,11 @@ Además, `validar()` rechaza cualquier asiento descuadrado o con cuentas fuera d
 
 ```
 ┌──────────────────────┐      ┌────────────────────────────────────────┐      ┌─────────────────┐
-│ Dashboard            │─────▶│ Servidor Node (sin dependencias)       │─────▶│ Reap API        │
-│ public/index.html    │◀─────│  ├─ reap.js      cliente Reap          │◀─────│ Agentic module  │
-│ ledger, balanza,     │ poll │  ├─ agente.js    propuesta del agente  │      │ (sandbox SG)    │
-│ presupuestos, guard, │      │  ├─ guard.js     Ledger Guard          │      └─────────────────┘
-│ facturas, cierre     │      │  ├─ ledger.js    partida doble, cierre │
+│ Pantallas por rol    │─────▶│ Servidor Node (sin dependencias)       │─────▶│ Reap API        │
+│ solicitante, finanzas│◀─────│  ├─ reap.js      cliente Reap          │◀─────│ Agentic module  │
+│ y contador (public/) │ poll │  ├─ agente.js    propuesta del agente  │      │ (sandbox SG)    │
+│ + comun.js/comun.css │      │  ├─ guard.js     Ledger Guard          │      └─────────────────┘
+│                      │      │  ├─ ledger.js    partida doble, cierre │
 └──────────────────────┘      │  ├─ catalogo.js  cuentas, CC, categ.   │
                               │  └─ server.js    flujo y rutas         │
                               └───────────────────┬────────────────────┘
@@ -143,7 +151,8 @@ JPay/
 │  ├─ guard.js       # Ledger Guard
 │  ├─ agente.js      # propuesta del agente e instrucciones leídas de documentos
 │  └─ catalogo.js    # cuentas, categorías y centros de costo
-├─ public/index.html # dashboard
+├─ public/           # index (elige rol), solicitante, finanzas, contador, comun.js/css
+├─ docs/             # CONTRATO.md, diagramas de arquitectura y flujo
 ├─ test/             # node --test: ledger y guard
 ├─ .env.example
 └─ README.md

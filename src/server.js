@@ -133,7 +133,7 @@ const rutas = {
   },
 
   'POST /api/tarjeta': async () => {
-    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/` });
+    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/finanzas.html` });
     db.enrollmentId = e.id;
     await guardar();
     return { url: e.nextAction?.url || null, status: e.status };
@@ -255,12 +255,12 @@ const rutas = {
 
 async function retorno(url) {
   const intent = db.intents[url.searchParams.get('intent')];
-  if (!intent) return '/';
+  if (!intent) return '/finanzas.html';
   for (let i = 0; i < 5 && intent.estado === 'EN_CHECKOUT'; i++) {
     await conciliar(intent);
     if (intent.estado === 'EN_CHECKOUT') await new Promise((s) => setTimeout(s, 2000));
   }
-  return `/?intent=${intent.id}`;
+  return `/finanzas.html?intent=${intent.id}`;
 }
 
 function falla(status, mensaje) {
@@ -278,6 +278,16 @@ async function leerCuerpo(req) {
   try { return texto ? JSON.parse(texto) : {}; } catch { throw falla(400, 'JSON invalido.'); }
 }
 
+// Lista cerrada de archivos de public/: nada fuera de aqui se sirve.
+const ESTATICOS = {
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/solicitante.html': ['solicitante.html', 'text/html; charset=utf-8'],
+  '/finanzas.html': ['finanzas.html', 'text/html; charset=utf-8'],
+  '/contador.html': ['contador.html', 'text/html; charset=utf-8'],
+  '/comun.js': ['comun.js', 'text/javascript; charset=utf-8'],
+  '/comun.css': ['comun.css', 'text/css; charset=utf-8'],
+};
+
 const responder = (res, status, datos) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(datos));
@@ -286,9 +296,10 @@ const responder = (res, status, datos) => {
 createServer(async (req, res) => {
   const url = new URL(req.url, PUBLIC_URL);
   try {
-    if (req.method === 'GET' && url.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(await readFile(new URL('public/index.html', RAIZ)));
+    const estatico = req.method === 'GET' && ESTATICOS[url.pathname];
+    if (estatico) {
+      res.writeHead(200, { 'Content-Type': estatico[1] });
+      return res.end(await readFile(new URL(`public/${estatico[0]}`, RAIZ)));
     }
     if (req.method === 'GET' && url.pathname === '/retorno') {
       res.writeHead(303, { Location: await retorno(url) });
