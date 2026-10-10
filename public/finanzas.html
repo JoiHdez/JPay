@@ -55,7 +55,7 @@
 </main>
 
 <script type="module">
-import { $, el, money, resumenCompra, pintarPresupuestos } from '/comun.js';
+import { $, el, money, usd, resumenCompra, pintarPresupuestos } from '/comun.js';
 import { explicarError, errorHttp, resultadoAutorizar, restante, cuentaRegresiva, motivosBloqueo } from '/errores.js';
 
 // La lista se repinta cada 6 s; esto sobrevive al repintado.
@@ -122,9 +122,20 @@ function tarjeta(i) {
   // El error y las violaciones del guard van abajo, junto a los botones.
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra({ ...i, error: null, guard: null }));
   if (i.estado === 'FALLIDO') caja.querySelector('.chip').textContent = 'No aprobado en Reap · no se cobró';
+  if (i.estado === 'COMPLETADO') {
+    const copia = el('span', { className: 'muted', role: 'status' });
+    const boton = el('button', { className: 'sec', textContent: 'Copiar orden', style: 'font-size:12px;padding:4px 8px' });
+    boton.disabled = !i.orderId;
+    boton.onclick = async () => {
+      try { await navigator.clipboard.writeText(i.orderId); copia.textContent = 'Orden copiada'; }
+      catch { copia.textContent = 'No se pudo copiar. Selecciona la orden y cópiala.'; }
+    };
+    caja.append(el('div', { className: 'fila', style: 'margin-top:8px' },
+      el('strong', { textContent: `Pagado · orden ${i.orderId || 'no disponible'} · cobrado ${usd(i.finalUsd)}` }), boton, copia));
+  }
   if (!pendiente) {
     const r = seguidas.has(i.id) ? resultadoAutorizar(null, i) : null;
-    if (r) caja.append(avisoPago(i, r.aviso));
+    if (r && i.estado !== 'COMPLETADO') caja.append(avisoPago(i, r.aviso));
     return caja;
   }
 

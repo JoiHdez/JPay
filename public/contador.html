@@ -22,12 +22,11 @@
     <section>
       <h2>Adjuntar factura</h2>
       <div class="dos">
-        <div><label>Orden de Reap</label><input id="fOrden"></div>
-        <div><label>Total (USD)</label><input id="fTotal" type="number" step="0.01"></div>
+        <div><label for="fOrden">Orden de Reap</label><select id="fOrden"><option value="">Aún no hay pagos completados</option></select></div>
+        <div><label for="fTotal">Total (USD)</label><input id="fTotal" type="number" step="0.01"></div>
       </div>
       <label>Folio / UUID CFDI</label><input id="fFolio" maxlength="60">
-      <div style="margin-top:10px"><button class="sec" id="btnFactura">Adjuntar al asiento</button></div>
-      <div class="err" id="fMsg"></div>
+      <div class="fila" style="margin-top:10px"><button class="sec" id="btnFactura" disabled>Adjuntar al asiento</button><span class="muted" id="fMsg" role="status"></span></div>
     </section>
 
     <section>
@@ -40,6 +39,7 @@
     <section>
       <h2>Pagos <span class="muted" id="pagos"></span></h2>
       <div class="muted">Cada pago completado ya nace con su asiento; aquí solo se adjunta la factura y se cierra el mes.</div>
+      <div id="comprasPagadas" style="margin-top:10px"></div>
       <div class="err" id="error"></div>
     </section>
 
@@ -63,21 +63,57 @@
 
 <script type="module">
 import { $, el, api, money, usd } from '/comun.js';
+import { explicarError } from '/errores.js';
 
 let catalogo = null;
 const vistos = new Set();
+let comprasPagadas = [];
+let adjuntando = false;
+const resultadosFactura = new Map();
+
+function resultadoFactura(i) {
+  return resultadosFactura.get(i.orderId) || (i.factura ? { clase: 'ok', texto: `✓ Conciliada · folio ${i.factura.folio}` } : null);
+}
+
+function chipFactura(i) {
+  const resultado = resultadoFactura(i);
+  return resultado ? el('span', { className: `chip ${resultado.clase}`, textContent: resultado.texto }) : null;
+}
+
+function elegirOrden() {
+  const compra = comprasPagadas.find((i) => i.orderId === $('fOrden').value);
+  $('fTotal').value = compra ? compra.finalUsd : '';
+}
+
+$('fOrden').onchange = () => { elegirOrden(); $('fMsg').textContent = ''; };
 
 async function cargar() {
   const d = await api('/api/estado');
   catalogo ??= d.catalogo;
   $('modo').textContent = `Reap ${d.modo}`;
   $('pagos').textContent = d.pagos.completados ? `${d.pagos.conAsiento}/${d.pagos.completados} pagos con asiento · ${d.pagos.conFactura} con factura` : '';
+  comprasPagadas = d.intents.filter((i) => i.estado === 'COMPLETADO' && i.orderId);
+  const ordenAnterior = $('fOrden').value;
+  $('fOrden').replaceChildren(...(comprasPagadas.length
+    ? comprasPagadas.map((i) => el('option', { value: i.orderId, textContent: `${i.orderId} · ${i.producto?.nombre || i.busqueda} · ${usd(i.finalUsd)}` }))
+    : [el('option', { value: '', textContent: 'Aún no hay pagos completados' })]));
+  if (comprasPagadas.some((i) => i.orderId === ordenAnterior)) $('fOrden').value = ordenAnterior;
+  else elegirOrden();
+  $('fOrden').disabled = !comprasPagadas.length;
+  $('btnFactura').disabled = adjuntando || !comprasPagadas.length;
+  $('comprasPagadas').replaceChildren(...comprasPagadas.map((i) => el('div', { className: 'intent' },
+    el('div', { className: 'fila' }, el('span', { className: 'chip ok', textContent: i.orderId }), el('strong', { textContent: i.producto?.nombre || i.busqueda })),
+    el('div', { className: 'muted', textContent: `Cobrado ${usd(i.finalUsd)}` }), chipFactura(i))));
+  const comprasPorId = new Map(comprasPagadas.map((i) => [i.id, i]));
 
   const filas = [];
   for (const a of d.asientos) {
     const nuevo = !vistos.has(a.id);
+    const compra = comprasPorId.get(a.intentId);
     a.lineas.forEach((l, k) => filas.push(el('tr', { className: nuevo ? 'nuevo' : '' },
-      el('td', {}, k === 0 ? el('div', {}, el('strong', { textContent: `${a.id} ${a.tipo}` }), el('div', { className: 'muted', textContent: a.concepto || '' })) : ''),
+      el('td', {}, k === 0 ? el('div', {}, el('strong', { textContent: `${a.id} ${a.tipo}` }),
+        a.tipo === 'DEVENGADO' && compra ? el('div', { className: 'fila' }, el('span', { className: 'chip ok', textContent: compra.orderId }), chipFactura(compra)) : null,
+        el('div', { className: 'muted', textContent: a.concepto || '' })) : ''),
       el('td', { textContent: `${l.cuenta} ${catalogo.cuentas[l.cuenta].nombre}` }),
       el('td', { textContent: l.cc || '' }),
       el('td', { className: 'n', textContent: l.debe ? money(l.debe) : '' }),
@@ -101,12 +137,26 @@ async function cargar() {
 
 $('btnFactura').onclick = async () => {
   $('fMsg').textContent = '';
+  const orderId = $('fOrden').value;
+  const compra = comprasPagadas.find((i) => i.orderId === orderId);
+  const total = Number($('fTotal').value);
+  adjuntando = true;
+  $('btnFactura').disabled = true;
   try {
-    const r = await api('/api/facturas', { orderId: $('fOrden').value, total: Number($('fTotal').value), folio: $('fFolio').value });
-    $('fMsg').style.color = 'var(--ok)';
-    $('fMsg').textContent = `Adjuntada a ${r.asientos.join(', ')}. Three-way match cerrado.`;
-    cargar();
-  } catch (e) { $('fMsg').style.color = ''; $('fMsg').textContent = e.message; }
+    const r = await api('/api/facturas', { orderId, total, folio: $('fFolio').value });
+    resultadosFactura.set(orderId, { clase: 'ok', texto: `✓ Conciliada · folio ${r.factura.folio}` });
+  } catch (e) {
+    const diferencia = compra ? Math.round(Math.abs(total - compra.finalUsd) * 100) / 100 : 0;
+    const desfase = diferencia > 0.01 && (e.message.includes('no coincide con lo pagado') || e.message === 'Ese pago ya tiene factura.');
+    resultadosFactura.set(orderId, { clase: desfase ? 'warn' : 'bad', texto: desfase ? `Diferencia ${usd(diferencia)}` : explicarError(e.message)?.claro || 'No se pudo adjuntar la factura. Vuelve a intentar.' });
+  } finally {
+    const resultado = resultadosFactura.get(orderId);
+    $('fMsg').style.color = `var(--${resultado.clase})`;
+    $('fMsg').textContent = resultado.texto;
+    adjuntando = false;
+    $('btnFactura').disabled = !comprasPagadas.length;
+    await cargar().catch((e) => { $('error').textContent = e.message; });
+  }
 };
 $('btnCierre').onclick = async () => {
   try {
