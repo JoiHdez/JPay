@@ -15,12 +15,37 @@ import * as L from './ledger.js';
 import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
 
+// REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
+// 400 AGENTIC_REQUEST_REJECTED {field: shippingAddress} hasta el primer pedido; mejor no arrancar.
+function leerEnvio(texto) {
+  const salir = (mensaje) => { console.error(`REAP_ENVIO: ${mensaje}`); process.exit(1); };
+  if (!texto?.trim()) {
+    if (modoReap === 'real') salir('falta en .env y Reap no cotiza sin direccion de envio. Copia la linea de .env.example.');
+    return undefined;
+  }
+  let envio;
+  try {
+    envio = JSON.parse(texto);
+  } catch (e) {
+    salir(`no es JSON valido (${e.message}). Va en una sola linea y sin comillas alrededor, como en .env.example.`);
+  }
+  if (!envio || typeof envio !== 'object' || Array.isArray(envio)) {
+    const tipo = envio === null ? 'null' : Array.isArray(envio) ? 'arreglo' : typeof envio;
+    salir(`debe ser un objeto JSON y llego como ${tipo}.${tipo === 'string' ? ' Quita las comillas de afuera.' : ''} Copia el formato de .env.example.`);
+  }
+  // Los que Reap exige en shippingAddress (docs de POST /agentic/quotes).
+  const faltan = ['firstName', 'lastName', 'phone', 'addressLine1', 'city', 'country'].filter((c) => !String(envio[c] ?? '').trim());
+  if (faltan.length) salir(`le falta ${faltan.join(', ')}; Reap exige esos campos en shippingAddress.`);
+  if (!/^\+[1-9]\d{6,14}$/.test(envio.phone)) salir('phone va en formato E.164, sin espacios ni guiones (por ejemplo +12127363100).');
+  return envio;
+}
+
 const PORT = Number(process.env.PORT || 3010);
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
 const PAIS = process.env.REAP_PAIS || 'US';
 const MONEDA = process.env.REAP_MONEDA || 'USD';
 const EMAIL = process.env.REAP_EMAIL || 'compras@jpay.demo';
-const ENVIO = process.env.REAP_ENVIO ? JSON.parse(process.env.REAP_ENVIO) : undefined;
+const ENVIO = leerEnvio(process.env.REAP_ENVIO);
 const RAIZ = new URL('..', import.meta.url);
 const ARCHIVO = new URL('data/jpay.json', RAIZ);
 
