@@ -47,7 +47,11 @@ export const ESTADO = {
   COMPLETADO: ['Pagado y contabilizado', 'ok'],
   FALLIDO: ['Reap no completó', 'bad'],
   EXPIRADO: ['Checkout expirado', 'bad'],
+  RECHAZADA: ['Rechazada por finanzas', 'bad'],
+  CAMBIOS_SOLICITADOS: ['Finanzas pidió cambios', 'warn'],
 };
+
+const DECISION = { RECHAZAR: 'rechazó', CAMBIOS: 'pidió cambios', AUTORIZAR: 'autorizó' };
 
 /** Chips de estado y del guard para una compra. */
 export function chipsDe(i) {
@@ -68,6 +72,7 @@ export function resumenCompra(i) {
         i.totalUsd != null ? el('div', { style: 'font-weight:700;margin-top:4px', textContent: usd(i.finalUsd ?? i.totalUsd) }) : null)),
     i.producto ? el('div', { className: 'muted', textContent: `${i.producto.tienda} · cantidad ${i.propuesta?.cantidad} · envío ${i.envioNombre || '-'}${i.orderId ? ` · orden ${i.orderId}` : ''}${i.factura ? ` · factura ${i.factura.folio}` : ''}` }) : null,
     i.error ? el('div', { className: 'err', textContent: i.error }) : null,
+    i.decision ? el('div', { className: 'muted', textContent: `${i.decision.por} ${DECISION[i.decision.accion] || i.decision.accion}: ${i.decision.motivo}` }) : null,
     i.guard && !i.guard.permitido && i.estado === 'APROBADO' ? el('ul', { className: 'viol' }, ...i.guard.violaciones.map((v) => el('li', { textContent: v.mensaje }))) : null,
   ].filter(Boolean);
 }

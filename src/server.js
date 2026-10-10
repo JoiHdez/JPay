@@ -16,6 +16,7 @@ import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
+import { PENDIENTE, decidir, recomprometer } from './decision.js';
 import { atenderAprobacion } from './reap-sim.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
@@ -219,7 +220,7 @@ const rutas = {
   'POST /api/intents/documento': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
     const instr = leerInstrucciones(String(b.texto || '').slice(0, 5000));
     const cotizado = await cotizar(intent, { cantidad: instr.cantidad ?? intent.cantidad, envioCaro: instr.envioCaro }, `doc-${Date.now()}`);
     cotizado.propuesta.saltarAprobacion = instr.saltarAprobacion;
@@ -233,7 +234,7 @@ const rutas = {
   'POST /api/intents/aprobar': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
     if (intent.cotizacion !== 'LISTA') {
       registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
       await guardar();
@@ -248,6 +249,8 @@ const rutas = {
     }
     if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
     if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
+    // Mientras se consultaba la tarjeta, finanzas pudo rechazar o pedir cambios.
+    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
 
     intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
     await guardar();
@@ -263,15 +266,24 @@ const rutas = {
     }
   },
 
-  // Recotiza un intent cuya cotizacion expiro o fue bloqueada.
+  // Recotiza un intent cuya cotizacion expiro o fue bloqueada, o al que finanzas le pidio cambios.
   'POST /api/intents/recotizar': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
-    evaluar(intent, await cotizar(intent, { cantidad: intent.cantidad }, `re-${Date.now()}`), 'Recotizacion del agente');
+    if (intent.estado !== PENDIENTE && intent.estado !== 'CAMBIOS_SOLICITADOS') throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
+    const cotizado = await cotizar(intent, { cantidad: intent.cantidad }, `re-${Date.now()}`);
+    // Se revisa despues de cotizar: otra peticion pudo cambiar el estado mientras Reap respondia.
+    // Tras pedir cambios el compromiso se libero; vuelve a reservarse antes de quedar pendiente.
+    if (intent.estado === 'CAMBIOS_SOLICITADOS') recomprometer(intent, { asientos: db.asientos, publicar, disponibleCc: disponible(intent.cc) });
+    else if (intent.estado !== PENDIENTE) throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
+    evaluar(intent, cotizado, 'Recotizacion del agente');
     await guardar();
     return intent;
   },
+
+  // Finanzas rechaza o pide cambios sin llamar a Reap: no hay checkout que cancelar todavia.
+  'POST /api/intents/rechazar': async (b) => decision(b, 'RECHAZAR', b.motivo),
+  'POST /api/intents/cambios': async (b) => decision(b, 'CAMBIOS', b.comentario),
 
   // 4. Factura del proveedor: se adjunta al asiento que ya existe. No se busca, se construye.
   'POST /api/facturas': async (b) => {
@@ -296,6 +308,14 @@ const rutas = {
   },
 };
 
+async function decision(b, accion, motivo) {
+  const intent = db.intents[b.id];
+  if (!intent) throw falla(404, 'Ese intent no existe.');
+  decidir(intent, { accion, por: b.por, motivo }, { asientos: db.asientos, publicar });
+  await guardar();
+  return intent;
+}
+
 async function retorno(url) {
   const intent = db.intents[url.searchParams.get('intent')];
   if (!intent) return '/finanzas.html';
@@ -306,9 +326,10 @@ async function retorno(url) {
   return `/finanzas.html?intent=${intent.id}`;
 }
 
-function falla(status, mensaje) {
+function falla(status, mensaje, codigo) {
   const e = new Error(mensaje);
   e.status = status;
+  if (codigo) e.codigoApi = codigo;
   return e;
 }
 
@@ -358,7 +379,8 @@ createServer(async (req, res) => {
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
   } catch (e) {
     if (!e.status || e.status >= 500) console.error(e.message);
-    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
+    // error sigue siendo texto; codigo es aditivo (TRANSICION_INVALIDA, ...) para quien lo quiera.
+    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message, ...(e.codigoApi ? { codigo: e.codigoApi } : {}) });
   }
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap})`);
