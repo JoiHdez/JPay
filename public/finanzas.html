@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>J-Pay · Finanzas</title>
 <link rel="stylesheet" href="/comun.css">
+<style>
+  /* Mismos colores que .barra .g y .barra .c de comun.css; el fondo de la barra es lo disponible. */
+  .leyenda { display: flex; gap: 12px; flex-wrap: wrap; }
+  .leyenda i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--line); margin-right: 4px; vertical-align: -1px; }
+  .leyenda i.g { background: var(--acc); }
+  .leyenda i.c { background: var(--warn); }
+  .acciones { margin-top: 8px; }
+  .motivos { margin-top: 6px; }
+  .motivos .viol { margin-top: 2px; }
+  .err details { color: var(--tx2); font-size: 12px; margin-top: 4px; }
+  .err summary { cursor: pointer; }
+  .err pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; font-size: 11px; }
+</style>
 </head>
 <body>
 <!-- Pantalla de quien autoriza el pago. Dueño: rama jordy/autorizador. -->
@@ -25,7 +38,7 @@
     <section>
       <h2>Presupuesto por centro de costo</h2>
       <div id="presupuestos"></div>
-      <div class="muted">Azul: consumido · Naranja: comprometido</div>
+      <div class="muted leyenda"><span><i class="g"></i>Consumido</span><span><i class="c"></i>Comprometido</span><span><i></i>Disponible</span></div>
     </section>
 
   </div>
@@ -40,10 +53,21 @@
 </main>
 
 <script type="module">
-import { $, el, api, accion, resumenCompra, pintarPresupuestos } from '/comun.js';
+import { $, el, api, resumenCompra, pintarPresupuestos } from '/comun.js';
+import { explicarError, restante, cuentaRegresiva, motivosBloqueo } from '/errores.js';
+
+// La lista se repinta cada 6 s; esto sobrevive al repintado.
+const enCurso = new Set();        // ids con una accion en vuelo
+const erroresLocales = new Map(); // id -> ultimo error de recotizar o autorizar
+const abiertos = new Set();       // ids con el "Detalle tecnico" abierto
+let tarjetaReap = null;           // raiz `tarjeta` de /api/estado
+let relojes = [];                 // una funcion por compra pendiente; corre cada segundo
+
+const claro = (e) => explicarError(e.message)?.claro || '';
 
 async function cargar() {
   const d = await api('/api/estado');
+  tarjetaReap = d.tarjeta;
   $('modo').textContent = `Reap ${d.modo}`;
   $('tarjeta').textContent = `Tarjeta: ${d.tarjeta || 'sin registrar'}`;
   $('tarjeta').className = `chip ${d.tarjeta === 'ACTIVE' ? 'ok' : 'warn'}`;
@@ -51,31 +75,101 @@ async function cargar() {
   $('pagos').textContent = d.pagos.completados ? `${d.pagos.conAsiento}/${d.pagos.completados} pagos con asiento · ${d.pagos.conFactura} con factura` : '';
   pintarPresupuestos($('presupuestos'), d.presupuestos);
 
+  relojes = [];
   const cont = $('intents');
   cont.replaceChildren();
   if (!d.intents.length) cont.textContent = 'Sin compras todavía.';
   for (const i of d.intents) cont.append(tarjeta(i));
-
 }
 
-function tarjeta(i) {
-  const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
-  const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra(i));
-  if (i.estado === 'APROBADO') {
-    const aprobar = el('button', { textContent: 'Autorizar y pagar con Reap' });
-    aprobar.onclick = () => accion(aprobar, async () => { location.href = (await api('/api/intents/aprobar', { id: i.id })).url; }, $('error'));
-    caja.append(el('div', { className: 'fila', style: 'margin-top:8px' }, aprobar));
+// Error en lenguaje claro, con el texto tecnico completo plegado debajo.
+function bloqueError(id, texto) {
+  const e = explicarError(texto);
+  if (!e) return null;
+  const caja = el('div', { className: 'err', textContent: e.claro });
+  if (e.tecnico) {
+    const det = el('details', { open: abiertos.has(id) }, el('summary', { textContent: 'Detalle técnico' }), el('pre', { textContent: e.tecnico }));
+    det.ontoggle = () => { if (det.open) abiertos.add(id); else abiertos.delete(id); };
+    caja.append(det);
   }
   return caja;
 }
 
+function tarjeta(i) {
+  const pendiente = i.estado === 'APROBADO';
+  const bloq = i.cotizacion === 'BLOQUEADA' && pendiente;
+  // El error y las violaciones del guard van abajo, junto a los botones.
+  const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra({ ...i, error: null, guard: null }));
+  if (!pendiente) return caja;
+
+  const reloj = el('span', { className: 'chip' });
+  const recotizar = el('button', { className: 'sec', textContent: 'Recotizar' });
+  const autorizar = el('button', { textContent: 'Autorizar y pagar con Reap' });
+  const lista = el('ul', { className: 'viol' });
+  const motivos = el('div', { className: 'motivos' }, el('div', { className: 'muted', textContent: 'No se puede autorizar todavía:' }), lista);
+
+  recotizar.onclick = () => ejecutar(i.id, async () => { await api('/api/intents/recotizar', { id: i.id }); });
+  autorizar.onclick = () => ejecutar(i.id, async () => { location.href = (await api('/api/intents/aprobar', { id: i.id })).url; return true; });
+
+  // El error de la cotizacion inicial solo vale mientras siga sin cotizacion.
+  const error = erroresLocales.get(i.id) || (i.cotizacion === 'ERROR' ? i.error : null);
+  caja.append(el('div', { className: 'fila acciones' }, autorizar, recotizar, reloj), motivos);
+  const err = bloqueError(i.id, error);
+  if (err) caja.append(err);
+
+  let previo = null;
+  const actualizar = (ahora) => {
+    const ms = restante(i.expira, ahora);
+    reloj.hidden = ms == null;
+    reloj.textContent = cuentaRegresiva(ms);
+    reloj.className = `chip ${ms <= 0 ? 'bad' : ms < 60000 ? 'warn' : 'ok'}`;
+    const ocupado = enCurso.has(i.id);
+    recotizar.disabled = ocupado;
+    recotizar.textContent = ocupado ? 'Procesando…' : 'Recotizar';
+    // Al expirar en vivo, el motivo aparece y el boton se apaga solo.
+    const m = motivosBloqueo(i, tarjetaReap, ahora);
+    autorizar.disabled = ocupado || m.length > 0;
+    autorizar.title = m.join('\n');
+    if (m.join('|') !== previo) {
+      previo = m.join('|');
+      lista.replaceChildren(...m.map((t) => el('li', { textContent: t })));
+      motivos.hidden = !m.length;
+    }
+  };
+  actualizar(Date.now());
+  relojes.push(actualizar);
+  return caja;
+}
+
+// Corre una accion de la compra. Si falla, el error queda en su tarjeta (sin alert).
+// fn devuelve true cuando se va a otra pagina (Reap): ahi no se repinta.
+async function ejecutar(id, fn) {
+  enCurso.add(id);
+  erroresLocales.delete(id);
+  tic();
+  try {
+    if (await fn()) return;
+  } catch (e) {
+    erroresLocales.set(id, e.message);
+  }
+  enCurso.delete(id);
+  await cargar().catch((e) => { $('error').textContent = claro(e); });
+}
+
+function tic() {
+  const ahora = Date.now();
+  for (const r of relojes) r(ahora);
+}
+
 $('btnTarjeta').onclick = async () => {
+  $('error').textContent = '';
   try { const r = await api('/api/tarjeta', {}); if (r.url) location.href = r.url; else cargar(); }
-  catch (e) { $('error').textContent = e.message; }
+  catch (e) { $('error').textContent = claro(e); }
 };
 
-cargar().catch((e) => { $('error').textContent = e.message; });
+cargar().catch((e) => { $('error').textContent = claro(e); });
 setInterval(() => cargar().catch(() => {}), 6000);
+setInterval(tic, 1000);
 </script>
 </body>
 </html>
