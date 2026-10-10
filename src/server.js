@@ -9,7 +9,7 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { reapApi, modo as modoReap } from './reap.js';
+import { reapApi, modo as modoReap, modoCheckout } from './reap.js';
 import { CATEGORIAS, CENTROS, CUENTAS } from './catalogo.js';
 import * as L from './ledger.js';
 import { revisar } from './guard.js';
@@ -144,6 +144,7 @@ const rutas = {
     const completados = Object.values(db.intents).filter((i) => i.estado === 'COMPLETADO');
     return {
       modo: modoReap,
+      modoCheckout, // hosted: el humano aprueba en Reap; simulado: X-Simulate-Checkout o sin llave
       tarjeta,
       catalogo: { cuentas: CUENTAS, categorias: CATEGORIAS, centros: CENTROS },
       intents: Object.values(db.intents).sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 15),
@@ -359,5 +360,7 @@ createServer(async (req, res) => {
     return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
   }
 }).listen(PORT, '127.0.0.1', () => {
-  console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap})`);
+  console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap}, checkout ${modoCheckout})`);
+  // Reap rechaza returnUrl que no sea HTTPS publico; se avisa aqui y no al primer pago.
+  if (modoReap === 'real' && !PUBLIC_URL.startsWith('https://')) console.warn('PUBLIC_URL no es HTTPS: Reap rechazara el returnUrl de la tarjeta y del checkout. Usa la URL del tunel.');
 });

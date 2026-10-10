@@ -13,6 +13,10 @@ const KEY = process.env.REAP_API_KEY;
 const BASE = (process.env.REAP_BASE || 'https://sandbox.api.reap.global').replace(/\/+$/, '');
 const VERSION = process.env.REAP_VERSION || '2025-02-14';
 export const modo = KEY ? 'real' : 'simulado';
+// X-Simulate-Checkout completa el checkout sin la pagina hosted; solo existe en sandbox y es opt-in,
+// para que por defecto el humano apruebe cada cargo en Reap.
+const SIMULAR_CHECKOUT = process.env.REAP_SIMULAR_CHECKOUT === '1';
+export const modoCheckout = KEY && !SIMULAR_CHECKOUT ? 'hosted' : 'simulado';
 
 // Solo se reintenta si la conexion no llego a abrirse (la red del venue corta al azar): Reap
 // no vio la peticion, y los POST que crean algo llevan Idempotency-Key fija de todos modos.
@@ -94,8 +98,9 @@ const real = {
     reap('/agentic/checkouts', {
       metodo: 'POST',
       idempotencia: clave,
-      // Solo existe en sandbox; produccion lo rechaza, y este servicio solo corre en sandbox.
-      extra: { 'X-Simulate-Checkout': 'COMPLETED' },
+      // Responde REQUIRES_ACTION con nextAction.url: la pagina hosted donde el humano aprueba.
+      // El header de simulacion solo existe en sandbox; produccion lo rechaza.
+      extra: SIMULAR_CHECKOUT ? { 'X-Simulate-Checkout': 'COMPLETED' } : {},
       cuerpo: { quoteId, enrollmentId, presentation: { type: 'REDIRECT', returnUrl } },
     }),
   consultarCheckout: (id) => reap(`/agentic/checkouts/${encodeURIComponent(id)}`),
