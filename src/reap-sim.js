@@ -219,34 +219,10 @@ export const simulado = crearSimulado({ archivo: fileURLToPath(new URL('../data/
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const dinero = (m) => (m ? `${esc(m.currency)} ${Number(m.amount).toFixed(2)}` : '');
 
+// La presentacion vive en public/; aqui solo se sirve con el detalle del checkout.
+const plantilla = readFileSync(new URL('../public/sim-aprobar.html', import.meta.url), 'utf8');
 function pagina(cuerpo) {
-  return `<!doctype html>
-<html lang="es-MX">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Simulador de Reap</title>
-<style>
-  body { margin: 0; padding: 24px 16px; font: 16px/1.5 system-ui, sans-serif; background: #f4f4f5; color: #18181b; }
-  main { max-width: 440px; margin: 0 auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px #0003; }
-  .aviso { margin: 0 0 16px; padding: 10px 12px; border: 1px solid #f59e0b; border-radius: 8px; background: #fef3c7; color: #92400e; font-weight: 700; }
-  h1 { margin: 0 0 4px; font-size: 20px; }
-  .total { margin: 8px 0 16px; font-size: 32px; font-weight: 700; }
-  table { width: 100%; border-collapse: collapse; }
-  td { padding: 4px 0; border-bottom: 1px solid #f4f4f5; }
-  td:last-child { text-align: right; }
-  .muted { color: #71717a; font-size: 14px; }
-  .botones { display: flex; gap: 12px; margin-top: 20px; }
-  button, .boton { flex: 1; padding: 12px; border: 0; border-radius: 8px; font-size: 16px; text-align: center; text-decoration: none; cursor: pointer; }
-  .aprobar { background: #16a34a; color: #fff; }
-  .rechazar { background: #e4e4e7; color: #18181b; }
-</style>
-</head>
-<body><main>
-<p class="aviso">Simulador de Reap &mdash; sin dinero real</p>
-${cuerpo}
-</main></body>
-</html>`;
+  return plantilla.replace('<!-- contenido -->', () => cuerpo);
 }
 
 function verDetalle({ checkout: c, quote: q, restanteMs }) {
