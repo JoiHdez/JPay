@@ -97,11 +97,13 @@ const real = {
   consultarCheckout: (id) => reap(`/agentic/checkouts/${encodeURIComponent(id)}`),
 };
 
-// ponytail: un catalogo fijo de 3 productos; basta para ensayar, el real sale de Reap.
+// ponytail: catalogo fijo con productos de la lista oficial de comercios; basta para ensayar sin red.
 const CATALOGO = [
-  { id: 'prd_sim_1', name: 'Tide Liquid Laundry Detergent 92 oz', price: 13.97, tags: ['detergente', 'jabon', 'ropa', 'laundry'] },
-  { id: 'prd_sim_2', name: 'Bounty Paper Towels, 6 Double Rolls', price: 16.49, tags: ['papel', 'toallas', 'cocina', 'paper'] },
-  { id: 'prd_sim_3', name: 'Purina ONE Dry Dog Food 16.5 lb', price: 32.98, tags: ['croquetas', 'perro', 'dog', 'mascota'] },
+  { id: 'prd_sim_1', merchant: 'Package Free', name: 'Multi-Purpose Cleaning Spray (4 Pack)', price: 28.99, tags: ['cleaning', 'cleaner', 'spray', 'limpiador'] },
+  { id: 'prd_sim_2', merchant: 'CoffeeAM', name: 'Costa Rica Reserve Coffee', price: 19.95, tags: ['coffee', 'cafe'] },
+  { id: 'prd_sim_3', merchant: 'Keychron', name: 'Keychron K8 Wireless Mechanical Keyboard', price: 69.99, tags: ['keyboard', 'keychron', 'teclado'] },
+  { id: 'prd_sim_4', merchant: 'Plugable Technologies', name: 'Plugable USB-C Triple Monitor Docking Station', price: 149.99, tags: ['docking', 'dock', 'plugable'] },
+  { id: 'prd_sim_5', merchant: 'Baronfig', name: 'Thinker Tote Bundle', price: 95, tags: ['tote', 'baronfig', 'bolsa'] },
 ];
 const memoria = new Map();
 const usd = (amount) => ({ amount: Math.round(amount * 100) / 100, currency: 'USD' });
@@ -120,7 +122,7 @@ const simulado = {
       id: randomUUID(),
       products: hits.map((p) => ({
         id: p.id,
-        merchant: { name: 'tienda-simulada.test' },
+        merchant: { name: p.merchant },
         name: p.name,
         available: true,
         previewVariant: { id: `var_${p.id}`, name: p.name, price: usd(p.price), available: true },
