@@ -6,7 +6,7 @@
 //
 // La tarjeta nunca pasa por aqui: se guarda en la pagina alojada de Reap (enrollment) y cada
 // cargo se aprueba en otra pagina alojada (checkout). Este modulo solo maneja IDs.
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { simulado } from './reap-sim.js';
 
 const KEY = process.env.REAP_API_KEY;
@@ -17,6 +17,17 @@ export const modo = KEY ? 'real' : 'simulado';
 // para que por defecto el humano apruebe cada cargo en Reap.
 const SIMULAR_CHECKOUT = process.env.REAP_SIMULAR_CHECKOUT === '1';
 export const modoCheckout = KEY && !SIMULAR_CHECKOUT ? 'hosted' : 'simulado';
+
+/**
+ * Idempotency-Key del enrollment. Reap guarda la primera respuesta 24 h por llave: un doble clic
+ * con la misma llave recibe el mismo enrollment. La huella del cuerpo cambia la llave si cambia el
+ * returnUrl (otro tunel), porque misma llave con otro cuerpo es 400 IDEMPOTENT_PARAMETER_MISMATCH;
+ * el sufijo lo avanza el servidor cuando hace falta un enrollment nuevo.
+ */
+export function claveEnrollment({ clienteId, email, returnUrl, sufijo = 1 }) {
+  const huella = createHash('sha256').update(JSON.stringify([email, returnUrl])).digest('hex').slice(0, 12);
+  return `jpay-enr-${clienteId}-${sufijo}-${huella}`;
+}
 
 // Solo se reintenta si la conexion no llego a abrirse (la red del venue corta al azar): Reap
 // no vio la peticion, y los POST que crean algo llevan Idempotency-Key fija de todos modos.
@@ -63,10 +74,10 @@ const tapar = (v, visibles = 0) => (v ? `***${visibles ? String(v).slice(-visibl
 const enmascarar = (envio) => envio && { ...envio, phone: tapar(envio.phone, 2), addressLine1: tapar(envio.addressLine1), addressLine2: tapar(envio.addressLine2), postalCode: tapar(envio.postalCode) };
 
 const real = {
-  crearEnrollment: ({ clienteId, email, returnUrl }) =>
+  crearEnrollment: ({ clienteId, email, returnUrl, sufijo }) =>
     reap('/agentic/enrollments', {
       metodo: 'POST',
-      idempotencia: randomUUID(),
+      idempotencia: claveEnrollment({ clienteId, email, returnUrl, sufijo }),
       cuerpo: {
         source: 'EXTERNAL',
         owner: { type: 'CLIENT_REFERENCE', id: clienteId, email },

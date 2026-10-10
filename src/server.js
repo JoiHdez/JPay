@@ -217,6 +217,33 @@ async function autorizar(intent, b) {
   }
 }
 
+// Registro de la tarjeta (enrollment). La Idempotency-Key (claveEnrollment en src/reap.js) se repite
+// mientras el enrollment anterior siga vivo, asi que pedirlo otra vez devuelve el mismo y su pagina
+// hosted. El sufijo, guardado en data/jpay.json, solo avanza cuando hace falta uno nuevo: el anterior
+// quedo EXPIRED, FAILED o REVOKED, o Reap respondio un error que con esa llave repetiria 24 h.
+let registrandoTarjeta = null;
+async function registrarTarjeta() {
+  if (db.enrollmentId) {
+    const previo = await reapApi.enrollment(db.enrollmentId).catch(() => null);
+    if (previo?.status === 'ACTIVE') return { url: null, status: 'ACTIVE' };
+    if (['EXPIRED', 'FAILED', 'REVOKED'].includes(previo?.status)) {
+      db.enrollmentSufijo = (db.enrollmentSufijo || 1) + 1;
+      db.enrollmentId = null;
+    }
+  }
+  try {
+    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/finanzas.html`, sufijo: db.enrollmentSufijo || 1 });
+    db.enrollmentId = e.id;
+    return { url: e.nextAction?.url || null, status: e.status };
+  } catch (e) {
+    // Reap no guarda 401, 422 ni 429, y 409 es la misma llave aun en vuelo; sin status no hubo respuesta.
+    if (e.status && ![401, 409, 422, 429].includes(e.status)) db.enrollmentSufijo = (db.enrollmentSufijo || 1) + 1;
+    throw e;
+  } finally {
+    await guardar();
+  }
+}
+
 const rutas = {
   'GET /api/estado': async () => {
     for (const i of Object.values(db.intents)) await conciliar(i).catch((e) => console.error(e.message));
@@ -242,12 +269,8 @@ const rutas = {
     };
   },
 
-  'POST /api/tarjeta': async () => {
-    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/finanzas.html` });
-    db.enrollmentId = e.id;
-    await guardar();
-    return { url: e.nextAction?.url || null, status: e.status };
-  },
+  // Un doble clic recibe la misma respuesta: en este proceso comparte la promesa y en Reap la llave.
+  'POST /api/tarjeta': () => (registrandoTarjeta ??= registrarTarjeta().finally(() => { registrandoTarjeta = null; })),
 
   // 1. Intent del empleado: se aprueba contra presupuesto y nace el compromiso. 2. El agente cotiza.
   'POST /api/intents': async (b) => {
