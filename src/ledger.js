@@ -26,20 +26,31 @@ export function validar(asiento) {
 
 export const cuadra = (asiento) => { try { validar(asiento); return true; } catch { return false; } };
 
-/** Saldos por cuenta (debe - haber) de los asientos publicados. */
+function resumirBalanza(filas) {
+  const total = filas.reduce((t, f) => ({ debe: t.debe + f.debe, haber: t.haber + f.haber }), { debe: 0, haber: 0 });
+  return { filas, total, cuadra: total.debe === total.haber };
+}
+
+/**
+ * Saldos publicados (debe - haber), separados en balance y cuentas de orden.
+ * Conserva filas/total globales para los consumidores existentes; cada fila indica orden.
+ * El cuadre global exige también el cuadre independiente de ambos grupos.
+ */
 export function balanza(asientos) {
   const s = {};
   for (const a of asientos) {
     if (a.estado !== 'PUBLICADO') continue;
     for (const l of a.lineas) {
-      s[l.cuenta] ??= { cuenta: Number(l.cuenta), nombre: CUENTAS[l.cuenta].nombre, debe: 0, haber: 0 };
+      s[l.cuenta] ??= { cuenta: Number(l.cuenta), nombre: CUENTAS[l.cuenta].nombre, orden: Boolean(CUENTAS[l.cuenta].orden), debe: 0, haber: 0 };
       s[l.cuenta].debe += l.debe || 0;
       s[l.cuenta].haber += l.haber || 0;
     }
   }
   const filas = Object.values(s).sort((a, b) => a.cuenta - b.cuenta).map((f) => ({ ...f, saldo: f.debe - f.haber }));
-  const total = filas.reduce((t, f) => ({ debe: t.debe + f.debe, haber: t.haber + f.haber }), { debe: 0, haber: 0 });
-  return { filas, total, cuadra: total.debe === total.haber };
+  const general = resumirBalanza(filas);
+  const balance = resumirBalanza(filas.filter((f) => !f.orden));
+  const orden = resumirBalanza(filas.filter((f) => f.orden));
+  return { ...general, cuadra: general.cuadra && balance.cuadra && orden.cuadra, balance, orden };
 }
 
 /** Por centro de costo: comprometido vivo, consumido (devengado) y disponible, en centavos. */
@@ -59,6 +70,62 @@ export function presupuestos(asientos) {
 }
 
 // ── Asientos tipo ──────────────────────────────────────────────────────────────
+
+function validarPresupuesto(centroCosto, monto) {
+  if (!Object.hasOwn(CENTROS, centroCosto)) throw new Error(`Centro de costo ${centroCosto} no existe`);
+  if (!Number.isSafeInteger(monto) || monto <= 0) throw new Error('El presupuesto debe ser un entero positivo en centavos');
+}
+
+/**
+ * Construye una apertura con ID estable por centro de costo y período mensual (YYYY-MM).
+ * monto está en centavos. No publica ni guarda estado: asegurarAperturasPresupuesto evita
+ * duplicados consultando el libro persistido, incluso después de reiniciar el proceso.
+ */
+export function aperturaPresupuesto(centroCosto, monto, periodo) {
+  validarPresupuesto(centroCosto, monto);
+  if (typeof periodo !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo)) {
+    throw new Error('El período de presupuesto debe tener formato YYYY-MM');
+  }
+  return validar({
+    id: `APERTURA-${centroCosto}-${periodo}`,
+    tipo: 'APERTURA_PRESUPUESTO',
+    periodo,
+    lineas: [{ cuenta: 8000, cc: centroCosto, debe: monto }, { cuenta: 8900, cc: centroCosto, haber: monto }],
+  });
+}
+
+/**
+ * Publica solo aperturas faltantes de CENTROS para el período indicado.
+ * publicar debe añadir el asiento PUBLICADO a asientos; el servidor debe guardar el libro
+ * antes de aceptar solicitudes. Una apertura existente no se repite aunque cambie el tope.
+ * Esto no implementa cierre ni traslado de saldos entre períodos.
+ */
+export function asegurarAperturasPresupuesto(asientos, periodo, publicar) {
+  if (!Array.isArray(asientos) || typeof publicar !== 'function') throw new Error('Se requieren el libro y una función para publicar');
+  const nuevas = [];
+  for (const [cc, centro] of Object.entries(CENTROS)) {
+    const apertura = aperturaPresupuesto(cc, centavos(centro.presupuesto), periodo);
+    const existe = asientos.some((a) => a.estado === 'PUBLICADO' && a.tipo === apertura.tipo && a.periodo === periodo
+      && a.lineas?.some((l) => Number(l.cuenta) === 8000 && l.cc === cc));
+    if (existe) continue;
+    publicar(apertura);
+    nuevas.push(apertura);
+  }
+  return nuevas;
+}
+
+/**
+ * Descuenta el consumo del disponible en cuentas de orden, sin cambiar compromiso/liberación.
+ * monto es el neto en centavos de CUENTAS_DE_CONSUMO del devengado y sus ajustes, no el IVA
+ * acreditable. El backend debe publicar este asiento al pagar, junto con la liberación.
+ */
+export function consumoPresupuesto(centroCosto, monto) {
+  validarPresupuesto(centroCosto, monto);
+  return validar({
+    tipo: 'CONSUMO_PRESUPUESTO',
+    lineas: [{ cuenta: 8900, cc: centroCosto, debe: monto }, { cuenta: 8000, cc: centroCosto, haber: monto }],
+  });
+}
 
 /** Compromiso: reserva el tope del intent en cuentas de orden (la orden de compra). */
 export const compromiso = ({ cc, monto }) => ({

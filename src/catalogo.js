@@ -11,8 +11,9 @@ export const CUENTAS = {
   5300: { nombre: 'Marketing', tipo: 'gasto' },
   5400: { nombre: 'Fletes y envios', tipo: 'gasto' },
   5900: { nombre: 'Diferencias en precio', tipo: 'gasto' },
-  8000: { nombre: 'Presupuesto disponible', tipo: 'orden' },
-  8100: { nombre: 'Presupuesto comprometido', tipo: 'orden' },
+  8000: { nombre: 'Presupuesto disponible', tipo: 'orden', orden: true },
+  8100: { nombre: 'Presupuesto comprometido', tipo: 'orden', orden: true },
+  8900: { nombre: 'Presupuesto autorizado (contra)', tipo: 'orden', orden: true },
 };
 
 // Cuenta de cargo valida por categoria de compra.
