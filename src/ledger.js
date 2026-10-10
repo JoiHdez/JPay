@@ -75,18 +75,23 @@ export const liberacion = ({ cc, monto }) => ({
 /**
  * Pre-asiento desde el amountBreakdown real del quote de Reap. Si los componentes de Reap no
  * suman finalAmount, el asiento sale descuadrado a proposito: el guard lo detecta.
+ * paisComercio es un argumento opcional interno: el backend debe pasar el código de país
+ * verificado del comercio, no el país de envío. Solo MX separa el impuesto en 1300;
+ * cualquier otro país, o su ausencia, lo carga a la cuenta y centro de costo de la compra.
+ * Las llamadas existentes con { cc, cuenta, breakdown } siguen siendo válidas.
  */
-export function preAsiento({ cc, cuenta, breakdown }) {
+export function preAsiento({ cc, cuenta, breakdown, paisComercio }) {
   const b = breakdown;
   const taxIncluido = b.tax?.includedInPrices;
   const tax = centavos(b.tax?.amount?.amount ?? 0);
+  const taxAcreditable = typeof paisComercio === 'string' && paisComercio.trim().toUpperCase() === 'MX';
   const descuentos = (b.discounts || []).reduce((s, d) => s + centavos(d.amount?.amount ?? d.amount ?? 0), 0);
   const extras = (b.additionalCharges || []).reduce((s, d) => s + centavos(d.amount?.amount ?? d.amount ?? 0), 0);
   const base = centavos(b.itemsSubtotal?.amount ?? 0) - (taxIncluido ? tax : 0) - descuentos + extras;
   const lineas = [{ cuenta, cc, debe: base }];
   const envio = centavos(b.shipping?.amount ?? 0);
   if (envio) lineas.push({ cuenta: 5400, cc, debe: envio });
-  if (tax) lineas.push({ cuenta: 1300, debe: tax });
+  if (tax) lineas.push(taxAcreditable ? { cuenta: 1300, debe: tax } : { cuenta, cc, debe: tax });
   lineas.push({ cuenta: 2100, haber: centavos(b.finalAmount.amount) });
   return { tipo: 'PRE_ASIENTO', lineas };
 }
