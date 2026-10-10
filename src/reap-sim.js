@@ -4,15 +4,26 @@
 import { randomUUID } from 'node:crypto';
 
 // ponytail: catalogo fijo con productos de la lista oficial de comercios; basta para ensayar sin red.
-const CATALOGO = [
+// Del 6 en adelante cubren los presets de la UI dentro de su tope, aun con la cantidad maxima.
+export const CATALOGO = [
   { id: 'prd_sim_1', merchant: 'Package Free', name: 'Multi-Purpose Cleaning Spray (4 Pack)', price: 28.99, tags: ['cleaning', 'cleaner', 'spray', 'limpiador'] },
   { id: 'prd_sim_2', merchant: 'CoffeeAM', name: 'Costa Rica Reserve Coffee', price: 19.95, tags: ['coffee', 'cafe'] },
   { id: 'prd_sim_3', merchant: 'Keychron', name: 'Keychron K8 Wireless Mechanical Keyboard', price: 69.99, tags: ['keyboard', 'keychron', 'teclado'] },
   { id: 'prd_sim_4', merchant: 'Plugable Technologies', name: 'Plugable USB-C Triple Monitor Docking Station', price: 149.99, tags: ['docking', 'dock', 'plugable'] },
   { id: 'prd_sim_5', merchant: 'Baronfig', name: 'Thinker Tote Bundle', price: 95, tags: ['tote', 'baronfig', 'bolsa'] },
+  { id: 'prd_sim_6', merchant: 'Package Free', name: 'Laundry Detergent Powder - Unscented (64 Loads)', price: 16.95, tags: ['laundry', 'detergent', 'jabon', 'ropa'] },
+  { id: 'prd_sim_7', merchant: 'Public Goods', name: 'Bamboo Paper Towels (6 Rolls)', price: 24.95, tags: ['paper', 'towel', 'toallas', 'papel'] },
+  { id: 'prd_sim_8', merchant: 'Public Goods', name: 'Organic Cotton Tote Bag', price: 18, tags: ['tote', 'bolsa', 'tela'] },
+  { id: 'prd_sim_9', merchant: 'ZM Desktop', name: 'Modular Space-Saving Laptop Stand - Black Walnut', price: 58, tags: ['laptop', 'stand', 'soporte'] },
 ];
 const memoria = new Map();
 const usd = (amount) => ({ amount: Math.round(amount * 100) / 100, currency: 'USD' });
+
+// Como Reap: lo mas parecido a la busqueda sale primero, y el servidor cotiza el primero que surta.
+const relevancia = (p, q) => {
+  const texto = `${p.name} ${p.tags.join(' ')}`.toLowerCase();
+  return q.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && texto.includes(w)).length;
+};
 
 export const simulado = {
   async crearEnrollment({ clienteId, email, returnUrl }) {
@@ -21,9 +32,15 @@ export const simulado = {
     return { ...memoria.get(id), status: 'REQUIRES_ACTION', nextAction: { type: 'REDIRECT', url: returnUrl } };
   },
   enrollment: async (id) => memoria.get(id) || { id, status: 'EXPIRED' },
-  async buscar({ query }) {
+  async buscar({ query, max }) {
     const q = query.toLowerCase();
-    const hits = CATALOGO.filter((p) => p.tags.some((t) => q.includes(t)) || q.includes(p.name.toLowerCase()));
+    const hits = CATALOGO
+      .filter((p) => p.tags.some((t) => q.includes(t)) || q.includes(p.name.toLowerCase()))
+      .filter((p) => !max || p.price <= Number(max))
+      .map((p) => ({ p, r: relevancia(p, q) }))
+      .sort((a, b) => b.r - a.r)
+      .slice(0, 5)
+      .map(({ p }) => p);
     return {
       id: randomUUID(),
       products: hits.map((p) => ({
