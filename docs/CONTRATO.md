@@ -8,7 +8,7 @@ J-Pay separa funciones como lo haría un control interno: **quien pide no autori
 |---|---|---|---|
 | **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `src/agente.js` |
 | **Finanzas** (autoriza el pago) | `public/finanzas.html` | `jordy/autorizador` | `POST /api/intents/aprobar`, `POST /api/tarjeta`, `GET /retorno`, `src/guard.js` |
-| **Contador** (registra y cierra) | `public/contador.html` | por asignar | `POST /api/facturas`, `POST /api/cierre` |
+| **Contador** (registra y cierra) | `public/contador.html` | `contador` | `POST /api/facturas`, `POST /api/cierre` |
 
 **Compartido (solo en `main`, con aviso):** `public/comun.js`, `public/comun.css`, `public/index.html`, `src/ledger.js`, `src/catalogo.js`, `src/reap.js`, `GET /api/estado`. Todo cambio a `ledger.js` o `guard.js` va con su prueba en `test/`.
 
