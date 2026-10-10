@@ -1,0 +1,12 @@
+{
+  "name": "jpay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agente de Ochavo que repone lo que falta en casa con Reap Agentic Payments, dentro del presupuesto.",
+  "type": "module",
+  "engines": { "node": ">=20.6" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JPay</title>
+<style>
+  :root {
+    --bg: #FAFAF7; --surf: #FFFFFF; --tx: #0F1C33; --tx2: #5B6B85; --line: #E2E8F4;
+    --navy: #0F2548; --azul: #2A5298; --gn: #16A34A; --gnb: #F0FDF4; --coral: #DC2626; --rdb: #FEF2F2; --or: #EA580C; --orb: #FFF7ED;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0B1220; --surf: #151F36; --tx: #E6ECF7; --tx2: #9AA8C2; --line: #263450;
+      --navy: #3D6BC4; --azul: #6B95E0; --gn: #2FBF6B; --gnb: #10291C; --coral: #EF4444; --rdb: #2A1418; --or: #F97316; --orb: #2A1D10;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--tx); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .logo { width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, #0F2548, #2A5298); display: grid; place-items: center; color: #fff; font-weight: 800; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--tx2); font-size: 13px; }
+  .modo { margin-left: auto; font-size: 12px; color: var(--tx2); text-align: right; }
+  section { background: var(--surf); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--tx2); margin: 0 0 10px; }
+  .barra { height: 10px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 8px 0 6px; }
+  .barra > div { height: 100%; background: var(--azul); transition: width .4s; }
+  .fila { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grande { font-size: 22px; font-weight: 700; }
+  input { flex: 1; min-width: 160px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--tx); font: inherit; }
+  button { padding: 10px 14px; border: 0; border-radius: 10px; background: var(--azul); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button.sec { background: transparent; color: var(--azul); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .sug { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .sug:first-of-type { border-top: 0; }
+  .sug .info { flex: 1; }
+  .chip { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px; background: var(--orb); color: var(--or); }
+  .ok { background: var(--gnb); color: var(--gn); }
+  .no { background: var(--rdb); color: var(--coral); }
+  .aviso { padding: 10px 12px; border-radius: 10px; margin-top: 10px; }
+  .muted { color: var(--tx2); font-size: 13px; }
+  #pedido img { width: 64px; height: 64px; object-fit: contain; border-radius: 8px; background: #fff; }
+  .mic.on { background: var(--coral); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 6px 4px; border-top: 1px solid var(--line); }
+  .err { color: var(--coral); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo">J</div>
+    <div><h1>JPay</h1><div class="sub">Paga lo que falta en casa, dentro de tu presupuesto de Ochavo</div></div>
+    <div class="modo" id="modo"></div>
+  </header>
+
+  <section>
+    <h2 id="tituloPres">Presupuesto</h2>
+    <div class="fila"><span class="grande" id="restante">...</span><span class="muted" id="detallePres"></span></div>
+    <div class="barra"><div id="barra" style="width:0"></div></div>
+    <div class="fila" style="justify-content:space-between">
+      <span class="muted" id="tarjeta">Tarjeta: ...</span>
+      <button class="sec" id="btnTarjeta">Guardar tarjeta en Reap</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Toca reponer</h2>
+    <div id="sugerencias" class="muted">Revisando tu historial...</div>
+  </section>
+
+  <section>
+    <h2>¿Qué hace falta?</h2>
+    <form class="fila" id="form">
+      <input id="articulo" placeholder="Ej. detergente, toallas de papel, croquetas" maxlength="80" autocomplete="off">
+      <button type="button" class="sec mic" id="mic" title="Dictar">Voz</button>
+      <button id="btnCotizar">Cotizar</button>
+    </form>
+    <div id="error" class="err" style="margin-top:8px"></div>
+  </section>
+
+  <section id="pedido" hidden></section>
+
+  <section>
+    <h2>Pedidos</h2>
+    <table><tbody id="pedidos"></tbody></table>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const mxn = (n) => n == null ? '-' : n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
+const usd = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+// Todo lo que viene de Reap o de Ochavo se pinta como texto, nunca como HTML.
+function el(tag, props = {}, ...hijos) {
+  const e = Object.assign(document.createElement(tag), props);
+  for (const h of hijos) if (h != null) e.append(h);
+  return e;
+}
+
+async function api(ruta, cuerpo) {
+  const r = await fetch(ruta, cuerpo ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) } : {});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'Algo fallo');
+  return d;
+}
+
+const ESTADOS = { COTIZADO: 'Cotizado', BLOQUEADO: 'Fuera de presupuesto', EN_CHECKOUT: 'Esperando aprobación', COMPLETADO: 'Comprado y registrado', PAGADO_SIN_REGISTRO: 'Pagado, falta registrar', EXPIRADO: 'Vencido, cotiza de nuevo', FALLIDO: 'Reap no completó la compra' };
+
+async function cargar() {
+  const d = await api('/api/estado');
+  $('modo').textContent = `Reap: ${d.modo.reap} · Ochavo: ${d.modo.ochavo}`;
+  const p = d.presupuesto;
+  $('tituloPres').textContent = `Presupuesto de ${d.categoria}`;
+  if (p) {
+    $('restante').textContent = `${mxn(p.remaining)} disponibles`;
+    $('detallePres').textContent = `de ${mxn(Number(p.amount))} · gastado ${mxn(p.spent)}`;
+    $('barra').style.width = `${Math.min(100, (p.spent / p.amount) * 100)}%`;
+  } else {
+    $('restante').textContent = 'Sin presupuesto';
+    $('detallePres').textContent = `Crea uno de ${d.categoria} en Ochavo: sin límite, JPay no compra.`;
+  }
+  $('tarjeta').textContent = `Tarjeta: ${d.tarjeta === 'ACTIVE' ? 'guardada en Reap' : d.tarjeta ? d.tarjeta.toLowerCase() : 'sin guardar'}`;
+  $('btnTarjeta').hidden = d.tarjeta === 'ACTIVE';
+
+  const s = $('sugerencias');
+  s.replaceChildren();
+  if (!d.sugerencias.length) s.textContent = 'Aún no hay compras repetidas en tu historial.';
+  for (const x of d.sugerencias.slice(0, 5)) {
+    const b = el('button', { textContent: 'Cotizar', className: x.toca ? '' : 'sec' });
+    b.onclick = () => cotizar(x.concepto);
+    s.append(el('div', { className: 'sug' },
+      el('div', { className: 'info' },
+        el('div', {}, el('strong', { textContent: x.concepto }), ' ', x.toca ? el('span', { className: 'chip', textContent: 'TOCA' }) : null),
+        el('div', { className: 'muted', textContent: `Cada ~${x.cadaDias} días · última hace ${x.diasDesdeUltima} · ${mxn(x.montoPromedio)} en promedio` })),
+      b));
+  }
+
+  const t = $('pedidos');
+  t.replaceChildren();
+  for (const x of d.pedidos) {
+    t.append(el('tr', {},
+      el('td', { textContent: x.producto?.nombre || x.articulo }),
+      el('td', { textContent: mxn(x.totalMxn) }),
+      el('td', { textContent: ESTADOS[x.status] || x.status }),
+      el('td', { className: 'muted', textContent: x.orderId ? `Orden ${x.orderId}` : '' })));
+  }
+  const id = new URLSearchParams(location.search).get('pedido');
+  const hecho = id && d.pedidos.find((x) => x.id === id);
+  if (hecho) mostrarPedido(hecho);
+}
+
+async function cotizar(articulo) {
+  $('error').textContent = '';
+  $('btnCotizar').disabled = true;
+  $('pedido').hidden = false;
+  $('pedido').replaceChildren(el('div', { className: 'muted', textContent: `Buscando "${articulo}" en tiendas compatibles con Reap...` }));
+  try {
+    mostrarPedido(await api('/api/cotizar', { articulo, cantidad: 1 }));
+    hablar();
+    cargar();
+  } catch (e) {
+    $('pedido').hidden = true;
+    $('error').textContent = e.message;
+  } finally {
+    $('btnCotizar').disabled = false;
+  }
+}
+
+let ultimo = null;
+function mostrarPedido(x) {
+  ultimo = x;
+  const g = x.guarda || {};
+  const caja = $('pedido');
+  caja.hidden = false;
+  let aviso;
+  if (x.status === 'COMPLETADO') aviso = el('div', { className: 'aviso ok', textContent: `Listo. Orden ${x.orderId}. Registré ${mxn(x.totalMxn)} en Ochavo.` });
+  else if (x.status === 'PAGADO_SIN_REGISTRO') aviso = el('div', { className: 'aviso no', textContent: `Reap cobró (orden ${x.orderId}) pero no pude registrarlo en Ochavo: ${x.error}` });
+  else if (g.permitido) aviso = el('div', { className: 'aviso ok', textContent: `Cabe en tu presupuesto. Te quedarían ${mxn(g.despues)}.` });
+  else if (g.motivo === 'excede') aviso = el('div', { className: 'aviso no', textContent: `No lo compro: excede tu presupuesto por ${mxn(g.faltante)}. Prueba otra presentación o espera al siguiente periodo.` });
+  else aviso = el('div', { className: 'aviso no', textContent: 'No lo compro: no tienes presupuesto en esta categoría.' });
+
+  const aprobar = el('button', { textContent: 'Aprobar con Reap' });
+  aprobar.onclick = async () => {
+    aprobar.disabled = true;
+    try { location.href = (await api('/api/aprobar', { id: x.id })).url; }
+    catch (e) { $('error').textContent = e.message; aprobar.disabled = false; }
+  };
+
+  caja.replaceChildren(
+    el('h2', { textContent: x.status === 'COMPLETADO' ? 'Compra completada' : 'Propuesta de JPay' }),
+    el('div', { className: 'fila' },
+      x.producto.imagen ? el('img', { src: x.producto.imagen, alt: '' }) : null,
+      el('div', { style: 'flex:1' },
+        el('strong', { textContent: x.producto.nombre }),
+        el('div', { className: 'muted', textContent: `${x.producto.tienda || ''} · envío ${x.envio || 'incluido'} · TC ${x.tc?.toFixed(2)}` })),
+      el('div', { style: 'text-align:right' },
+        el('div', { className: 'grande', textContent: mxn(x.totalMxn) }),
+        el('div', { className: 'muted', textContent: usd(x.totalUsd) }))),
+    aviso,
+    x.status === 'COTIZADO' ? el('div', { className: 'fila', style: 'margin-top:10px;justify-content:flex-end' },
+      el('span', { className: 'muted', textContent: 'Reap te pedirá confirmar el cargo en su página. JPay nunca ve tu tarjeta.' }), aprobar) : '',
+  );
+}
+
+// JPay responde en voz alta, como Luca en Ochavo.
+function hablar() {
+  if (!ultimo || !('speechSynthesis' in window)) return;
+  const g = ultimo.guarda || {};
+  const texto = g.permitido
+    ? `Encontré ${ultimo.articulo} en ${Math.round(ultimo.totalMxn)} pesos con envío. Cabe en tu presupuesto. ¿Lo apruebo?`
+    : `Encontré ${ultimo.articulo}, pero no cabe en tu presupuesto. No lo compro.`;
+  const u = new SpeechSynthesisUtterance(texto);
+  u.lang = 'es-MX';
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+$('form').onsubmit = (e) => {
+  e.preventDefault();
+  const v = $('articulo').value.trim();
+  if (v) cotizar(v);
+};
+
+$('btnTarjeta').onclick = async () => {
+  try { const r = await api('/api/tarjeta', {}); if (r.url) location.href = r.url; else cargar(); }
+  catch (e) { $('error').textContent = e.message; }
+};
+
+// Dictado es-MX, el mismo motor del navegador que usa LucaVoiceEngine en Ochavo.
+// "Se acabó el detergente" -> "detergente".
+const Reco = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!Reco) $('mic').hidden = true;
+else {
+  const r = new Reco();
+  r.lang = 'es-MX';
+  r.interimResults = false;
+  r.onresult = (e) => {
+    const dicho = e.results[0][0].transcript;
+    const articulo = dicho.replace(/^((luca|jpay|j pay)[, ]*)?(ya )?(se (nos )?(acab[oó]|termin[oó])|(hace|hacen) falta|compra|necesito|falta)( el| la| los| las| de)?\s*/i, '').replace(/[.?!]$/, '').trim();
+    $('articulo').value = articulo || dicho;
+    if (articulo) cotizar(articulo);
+  };
+  r.onend = () => $('mic').classList.remove('on');
+  $('mic').onclick = () => { $('mic').classList.add('on'); r.start(); };
+}
+
+cargar().catch((e) => { $('error').textContent = e.message; });
+</script>
+</body>
+</html>
