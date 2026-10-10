@@ -161,7 +161,10 @@ function evaluar(intent, { quote, producto, propuesta }, contexto, actor = 'agen
     cotizacion: resultado.permitido ? 'LISTA' : 'BLOQUEADA',
   });
   registrarGuard(intent, resultado, contexto);
+  const de = intent.estado;
   mover(intent, destino, { actor, evento: contexto, datos: { quoteId: quote.id, totalUsd: intent.totalUsd, violaciones: resultado.violaciones.map((v) => v.codigo) } });
+  // Los cambios pedidos ya se atendieron: la compra vuelve a esperar decision (el pedido queda en la traza).
+  if (de === 'CAMBIOS_SOLICITADOS') intent.decision = null;
 }
 
 // La cotizacion de Reap vence (~5 min). Antes del checkout la compra queda EXPIRADA (se puede
@@ -329,7 +332,13 @@ const rutas = {
       await guardar();
       return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
     } catch (e) {
-      anotar(intent, { actor: 'reap', evento: 'CHECKOUT_ERROR', datos: { mensaje: e.message } });
+      // Si Reap rechaza el checkout (cotizacion vencida o invalida), no hay reintento que valga:
+      // FALLIDA y se libera. Sin red, 5xx, 408 o 429 queda AUTORIZADA para reintentar.
+      const definitivo = e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
+      if (definitivo && intent.estado === 'AUTORIZADA') {
+        mover(intent, 'FALLIDA', { actor: 'reap', evento: 'CHECKOUT_RECHAZADO', datos: { mensaje: e.message } });
+        e.codigoApi = 'REAP_RECHAZO';
+      } else anotar(intent, { actor: 'reap', evento: 'CHECKOUT_ERROR', datos: { mensaje: e.message } });
       await guardar();
       throw e;
     } finally {

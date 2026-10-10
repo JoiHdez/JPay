@@ -80,7 +80,7 @@ export function decidir(intent, { accion, por, motivo }, { asientos, publicar, a
   const a = ACCIONES[accion];
   if (!a) throw falla(400, 'Accion invalida.', 'DATOS_INVALIDOS');
   if (!puede(intent.estado, a.estado)) {
-    throw falla(409, `La compra esta ${intent.estado}; ya no se puede ${a.verbo} la compra.`, 'TRANSICION_INVALIDA');
+    throw falla(409, `La compra esta ${intent.estado}; no se puede ${a.verbo} una compra en ese estado.`, 'TRANSICION_INVALIDA');
   }
   const texto = textoObligatorio(motivo, a.campo);
   const quien = String(por || 'Finanzas').trim().slice(0, 40) || 'Finanzas';
