@@ -117,8 +117,8 @@ function bloqueError(id, texto) {
 }
 
 function tarjeta(i) {
-  const pendiente = i.estado === 'APROBADO';
-  const bloq = i.cotizacion === 'BLOQUEADA' && pendiente;
+  const pendiente = ['COTIZADA', 'BLOQUEADA', 'SIN_COTIZACION', 'EXPIRADA', 'AUTORIZADA'].includes(i.estado);
+  const bloq = i.estado === 'BLOQUEADA';
   // El error y las violaciones del guard van abajo, junto a los botones.
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra({ ...i, error: null, guard: null }));
   if (!pendiente) {
@@ -181,7 +181,7 @@ async function autorizarPago(id) {
 
 // "Pagado · orden X · cobrado $Y" (o en espera de Reap), con el error que se perdio plegado.
 function avisoPago(i, texto) {
-  const caja = el('div', { className: `aviso ${i.estado === 'COMPLETADO' ? 'ok' : 'warn'}`, textContent: texto });
+  const caja = el('div', { className: `aviso ${i.estado === 'PAGADA' ? 'ok' : 'warn'}`, textContent: texto });
   if (perdidas.has(i.id)) {
     caja.append(el('details', {}, el('summary', { textContent: 'Detalle técnico: la respuesta de la autorización no llegó' }), el('pre', { textContent: perdidas.get(i.id) })));
   }

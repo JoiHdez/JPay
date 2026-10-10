@@ -42,13 +42,16 @@ export async function api(ruta, cuerpo) {
 
 // Estados del intent (contrato con el servidor).
 export const ESTADO = {
-  APROBADO: ['Comprometido', 'warn'],
-  EN_CHECKOUT: ['Esperando a Reap', 'warn'],
-  COMPLETADO: ['Pagado y contabilizado', 'ok'],
-  FALLIDO: ['Reap no completó', 'bad'],
-  EXPIRADO: ['Checkout expirado', 'bad'],
-  RECHAZADA: ['Rechazada por finanzas', 'bad'],
+  COTIZADA: ['Cotizada · comprometido', 'warn'],
+  SIN_COTIZACION: ['Sin cotización', 'bad'],
+  BLOQUEADA: ['Bloqueada', 'bad'],
   CAMBIOS_SOLICITADOS: ['Finanzas pidió cambios', 'warn'],
+  RECHAZADA: ['Rechazada por finanzas', 'bad'],
+  EXPIRADA: ['Cotización expirada', 'bad'],
+  AUTORIZADA: ['Autorizada', 'warn'],
+  EN_PAGO: ['Esperando a Reap', 'warn'],
+  PAGADA: ['Pagado y contabilizado', 'ok'],
+  FALLIDA: ['Reap no completó', 'bad'],
 };
 
 const DECISION = { RECHAZAR: 'rechazó', CAMBIOS: 'pidió cambios', AUTORIZAR: 'autorizó' };
@@ -56,8 +59,8 @@ const DECISION = { RECHAZAR: 'rechazó', CAMBIOS: 'pidió cambios', AUTORIZAR: '
 /** Chips de estado y del guard para una compra. */
 export function chipsDe(i) {
   const [txt, cls] = ESTADO[i.estado] || [i.estado, 'warn'];
-  const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
-  const lista = i.cotizacion === 'LISTA' && i.estado === 'APROBADO';
+  const bloq = i.estado === 'BLOQUEADA';
+  const lista = i.estado === 'COTIZADA';
   return el('span', {},
     el('span', { className: `chip ${cls}`, textContent: txt }), ' ',
     bloq ? el('span', { className: 'chip bad', textContent: 'Guard: bloqueado' }) : lista ? el('span', { className: 'chip ok', textContent: 'Guard: ok' }) : null);
@@ -73,7 +76,7 @@ export function resumenCompra(i) {
     i.producto ? el('div', { className: 'muted', textContent: `${i.producto.tienda} · cantidad ${i.propuesta?.cantidad} · envío ${i.envioNombre || '-'}${i.orderId ? ` · orden ${i.orderId}` : ''}${i.factura ? ` · factura ${i.factura.folio}` : ''}` }) : null,
     i.error ? el('div', { className: 'err', textContent: i.error }) : null,
     i.decision ? el('div', { className: 'muted', textContent: `${i.decision.por} ${DECISION[i.decision.accion] || i.decision.accion}: ${i.decision.motivo}` }) : null,
-    i.guard && !i.guard.permitido && i.estado === 'APROBADO' ? el('ul', { className: 'viol' }, ...i.guard.violaciones.map((v) => el('li', { textContent: v.mensaje }))) : null,
+    i.guard && !i.guard.permitido && i.estado === 'BLOQUEADA' ? el('ul', { className: 'viol' }, ...i.guard.violaciones.map((v) => el('li', { textContent: v.mensaje }))) : null,
   ].filter(Boolean);
 }
 

@@ -49,12 +49,12 @@ test('autorizar: con url redirige; sin url muestra lo que paso con el pago', () 
   const url = 'https://x.trycloudflare.com/retorno?intent=INT-1';
   assert.deepEqual(resultadoAutorizar({ url }, null), { ir: url });
   // El checkout se completo al instante y la respuesta no trajo url (o no llego).
-  const pagado = { id: 'INT-fee635ab', estado: 'COMPLETADO', orderId: 'SIM-914341', finalUsd: 27.54, totalUsd: 27.54 };
+  const pagado = { id: 'INT-fee635ab', estado: 'PAGADA', orderId: 'SIM-914341', finalUsd: 27.54, totalUsd: 27.54 };
   assert.deepEqual(resultadoAutorizar({}, pagado), { aviso: 'Pagado · orden SIM-914341 · cobrado $27.54' });
   assert.deepEqual(resultadoAutorizar(null, pagado), { aviso: 'Pagado · orden SIM-914341 · cobrado $27.54' });
-  assert.match(resultadoAutorizar(null, { ...pagado, estado: 'EN_CHECKOUT', orderId: undefined }).aviso, /esperando su confirmación/);
+  assert.match(resultadoAutorizar(null, { ...pagado, estado: 'EN_PAGO', orderId: undefined }).aviso, /esperando su confirmación/);
   // Sigue pendiente: no se sabe nada, va el error con su detalle.
-  assert.equal(resultadoAutorizar(null, { ...pagado, estado: 'APROBADO' }), null);
+  assert.equal(resultadoAutorizar(null, { ...pagado, estado: 'COTIZADA' }), null);
   assert.equal(resultadoAutorizar(null, undefined), null);
 });
 
@@ -70,15 +70,15 @@ test('cuentaRegresiva y restante', () => {
 
 test('motivosBloqueo: cada razon para no autorizar', () => {
   const ahora = Date.parse('2026-10-10T00:00:00Z');
-  const ok = { estado: 'APROBADO', cotizacion: 'LISTA', quoteId: 'quo_1', expira: '2026-10-10T00:05:00Z', guard: { permitido: true, violaciones: [] } };
+  const ok = { estado: 'COTIZADA', cotizacion: 'LISTA', quoteId: 'quo_1', expira: '2026-10-10T00:05:00Z', guard: { permitido: true, violaciones: [] } };
   assert.deepEqual(motivosBloqueo(ok, 'ACTIVE', ahora), []);
-  assert.match(motivosBloqueo({ ...ok, cotizacion: 'ERROR', quoteId: undefined }, 'ACTIVE', ahora)[0], /Sin cotización/);
+  assert.match(motivosBloqueo({ ...ok, estado: 'SIN_COTIZACION', cotizacion: 'ERROR', quoteId: undefined }, 'ACTIVE', ahora)[0], /Sin cotización/);
   assert.match(motivosBloqueo(ok, 'ACTIVE', Date.parse('2026-10-10T00:05:01Z'))[0], /expiró/);
-  const bloq = { ...ok, cotizacion: 'BLOQUEADA', guard: { permitido: false, violaciones: [{ codigo: 'TOPE', mensaje: 'Total supera el tope.' }, { codigo: 'ENVIO', mensaje: 'Envio caro.' }] } };
+  const bloq = { ...ok, estado: 'BLOQUEADA', cotizacion: 'BLOQUEADA', guard: { permitido: false, violaciones: [{ codigo: 'TOPE', mensaje: 'Total supera el tope.' }, { codigo: 'ENVIO', mensaje: 'Envio caro.' }] } };
   assert.deepEqual(motivosBloqueo(bloq, 'ACTIVE', ahora), ['Ledger Guard: Total supera el tope.', 'Ledger Guard: Envio caro.']);
   assert.match(motivosBloqueo(ok, null, ahora)[0], /sin registrar/);
   assert.match(motivosBloqueo(ok, 'PENDING', ahora)[0], /PENDING/);
   // Expirada y bloqueada por el servidor por lo mismo: un solo motivo.
-  const exp = { ...ok, cotizacion: 'BLOQUEADA', expira: '2026-10-09T23:00:00Z', guard: { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'Ya expiro.' }] } };
+  const exp = { ...ok, estado: 'EXPIRADA', cotizacion: 'BLOQUEADA', expira: '2026-10-09T23:00:00Z', guard: { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'Ya expiro.' }] } };
   assert.equal(motivosBloqueo(exp, 'ACTIVE', ahora).length, 1);
 });
