@@ -80,6 +80,8 @@ const PRESETS = [
 ];
 
 let catalogo = null;
+// Documentos de proveedor abiertos (id del intent -> texto). Sobreviven al refresco de cada 6 s.
+const docsAbiertos = new Map();
 
 function llenarForm(p) {
   for (const [k, v] of Object.entries({ solicitante: p.solicitante, cc: p.cc, busqueda: p.busqueda, categoria: p.categoria, tope: p.tope, cantidad: p.cantidad, max: p.max })) $(k).value = v;
@@ -98,6 +100,8 @@ async function cargar() {
   pintarPresupuestos($('presupuestos'), d.presupuestos);
 
   const cont = $('intents');
+  // No redibujar mientras alguien escribe en un documento de proveedor: perderia el cursor.
+  if (document.activeElement?.tagName === 'TEXTAREA' && cont.contains(document.activeElement)) return;
   cont.replaceChildren();
   if (!d.intents.length) cont.textContent = 'Sin compras todavía. Usa un preset o pide algo.';
   for (const i of d.intents) cont.append(tarjeta(i));
@@ -115,15 +119,20 @@ function tarjeta(i) {
     }
     const recotizar = el('button', { className: 'sec', textContent: 'Recotizar' });
     recotizar.onclick = () => accion(recotizar, async () => { await api('/api/intents/recotizar', { id: i.id }); await cargar(); }, $('error'));
-    const doc = el('button', { className: 'sec', textContent: 'Compartir cotización de proveedor' });
-    doc.onclick = () => {
-      const area = el('textarea', { value: DOC_ENVENENADO });
-      const enviar = el('button', { className: 'mal', textContent: 'Enviar al agente' });
-      enviar.onclick = () => accion(enviar, async () => { await api('/api/intents/documento', { id: i.id, texto: area.value }); await cargar(); }, $('error'));
-      caja.append(el('div', { style: 'margin-top:8px' }, el('label', { textContent: 'Documento que llega al chat (con instrucciones ocultas)' }), area, el('div', { style: 'margin-top:6px' }, enviar)));
-      doc.disabled = true;
-    };
+    const doc = el('button', { className: 'sec', textContent: 'Compartir cotización de proveedor', disabled: docsAbiertos.has(i.id) });
+    doc.onclick = () => { docsAbiertos.set(i.id, DOC_ENVENENADO); cargar().catch(() => {}); };
     caja.append(el('div', { className: 'fila', style: 'margin-top:8px' }, recotizar, doc));
+    if (docsAbiertos.has(i.id)) {
+      const area = el('textarea', { value: docsAbiertos.get(i.id) });
+      area.oninput = () => docsAbiertos.set(i.id, area.value);
+      const enviar = el('button', { className: 'mal', textContent: 'Enviar al agente' });
+      enviar.onclick = () => accion(enviar, async () => {
+        await api('/api/intents/documento', { id: i.id, texto: area.value });
+        docsAbiertos.delete(i.id);
+        await cargar();
+      }, $('error'));
+      caja.append(el('div', { style: 'margin-top:8px' }, el('label', { textContent: 'Documento que llega al chat (con instrucciones ocultas)' }), area, el('div', { style: 'margin-top:6px' }, enviar)));
+    }
   }
   return caja;
 }
