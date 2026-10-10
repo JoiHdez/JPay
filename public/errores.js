@@ -17,7 +17,8 @@ const QUE = [
 export function explicarError(texto) {
   const t = String(texto ?? '').trim();
   if (!t) return null;
-  const con = (claro) => ({ claro, tecnico: claro === t ? null : t });
+  // Si el texto claro ya contiene el original, no hace falta repetirlo como detalle.
+  const con = (claro) => ({ claro, tecnico: claro.includes(t) ? null : t });
 
   if (/sin conexi[oó]n con reap/i.test(t)) return con('Sin conexión con Reap. Revisa la red y vuelve a intentar.');
   if (/failed to fetch|load failed|networkerror/i.test(t)) return con('Sin conexión con el servidor de J-Pay. ¿Sigue corriendo?');
