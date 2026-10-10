@@ -5,6 +5,8 @@
 
 Proyecto para el **Reap Agentic Hackathon** (Reap × OSL × Payward, sede México).
 
+**Demo en vivo:** https://shaped-factors-chronicle-cocktail.trycloudflare.com · **Video:** [J-Pay-demo.mp4 en Drive](https://drive.google.com/drive/folders/1J4UPGkixR7aHG4CvpgqZHsTmzZSS9Ip9?usp=sharing)
+
 | | |
 |---|---|
 | **Tema** | 01 · Gasto empresarial |
