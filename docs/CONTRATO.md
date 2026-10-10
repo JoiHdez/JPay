@@ -6,7 +6,7 @@ J-Pay separa funciones como lo haría un control interno: **quien pide no autori
 
 | Rol | Pantalla | Rama | Servidor (rutas y módulos) |
 |---|---|---|---|
-| **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `src/agente.js`, `src/politica.js` |
+| **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `POST /api/intents/interpretar`, `src/agente.js`, `src/politica.js`, `src/pedidoNatural.js` |
 | **Finanzas** (autoriza el pago) | `public/finanzas.html` | `jordy/autorizador` | `POST /api/intents/aprobar`, `POST /api/tarjeta`, `GET /retorno`, `src/guard.js` |
 | **Contador** (registra y cierra) | `public/contador.html` | `contador` | `POST /api/facturas`, `POST /api/cierre` |
 

@@ -17,6 +17,13 @@
 <main>
   <div>
     <section>
+      <h2>Pedir en tus palabras</h2>
+      <textarea id="natural" maxlength="1000" placeholder="Ej. Necesito 2 limpiadores multiusos para la oficina de Operaciones, máximo 40 dólares"></textarea>
+      <div class="fila" style="margin-top:8px"><button type="button" class="sec" id="btnNatural">Interpretar con Claude</button><span class="muted">Claude llena el formulario; tú revisas y confirmas.</span></div>
+      <div class="muted" id="naturalMsg" style="margin-top:6px"></div>
+    </section>
+
+    <section>
       <h2>Pedir una compra</h2>
       <div class="fila" id="presets"></div>
       <form id="form">
@@ -117,6 +124,19 @@ function tarjeta(i) {
   }
   return caja;
 }
+
+$('btnNatural').onclick = () => accion($('btnNatural'), async () => {
+  $('naturalMsg').textContent = 'Claude está leyendo el pedido...';
+  try {
+    const p = await api('/api/intents/interpretar', { texto: $('natural').value });
+    for (const [k, v] of Object.entries({ cc: p.cc, categoria: p.categoria, busqueda: p.busqueda, cantidad: p.cantidad, max: Math.max(p.maxCantidad, p.cantidad) })) $(k).value = v;
+    $('tope').value = p.topeUsd ?? '';
+    $('naturalMsg').textContent = `${p.resumen}${p.faltante ? ` Falta: ${p.faltante}` : ' Revisa el formulario y da "Pedir y cotizar".'}`;
+  } catch (e) {
+    $('naturalMsg').textContent = '';
+    throw e;
+  }
+}, $('error'));
 
 $('form').onsubmit = (e) => {
   e.preventDefault();

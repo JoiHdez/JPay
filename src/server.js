@@ -15,6 +15,7 @@ import * as L from './ledger.js';
 import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
+import { interpretar } from './pedidoNatural.js';
 
 const PORT = Number(process.env.PORT || 3010);
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
@@ -175,6 +176,19 @@ const rutas = {
     return intent;
   },
 
+  // Pedido en lenguaje natural: Claude propone los campos y el solicitante confirma en el formulario.
+  // No crea el intent: ese paso sigue siendo POST /api/intents con sus validaciones.
+  'POST /api/intents/interpretar': async (b) => {
+    const texto = String(b.texto || '').trim();
+    if (texto.length < 3 || texto.length > 1000) throw falla(400, 'Escribe el pedido (3 a 1000 caracteres).');
+    const prohibido = restriccion(texto);
+    if (prohibido) throw falla(422, `${prohibido.mensaje} No se crea el pedido.`);
+    const propuesta = await interpretar(texto);
+    const tambien = restriccion(propuesta.busqueda);
+    if (tambien) throw falla(422, `${tambien.mensaje} No se crea el pedido.`);
+    return propuesta;
+  },
+
   // El vector de ataque: un "documento de proveedor" que el agente lee y obedece.
   'POST /api/intents/documento': async (b) => {
     const intent = db.intents[b.id];
@@ -313,7 +327,7 @@ createServer(async (req, res) => {
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
   } catch (e) {
     if (!e.status || e.status >= 500) console.error(e.message);
-    return responder(res, e.status && e.status < 500 ? e.status : 502, { error: e.message });
+    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
   }
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap})`);

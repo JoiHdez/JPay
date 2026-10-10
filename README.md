@@ -97,7 +97,7 @@ Además, `validar()` rechaza cualquier asiento descuadrado o con cuentas fuera d
 
 ```
 ┌──────────────────────┐      ┌────────────────────────────────────────┐      ┌─────────────────┐
-│ Pantallas por rol    │─────▶│ Servidor Node (sin dependencias)       │─────▶│ Reap API        │
+│ Pantallas por rol    │─────▶│ Servidor Node (node:http)              │─────▶│ Reap API        │
 │ solicitante, finanzas│◀─────│  ├─ reap.js      cliente Reap          │◀─────│ Agentic module  │
 │ y contador (public/) │ poll │  ├─ agente.js    propuesta del agente  │      │ (sandbox SG)    │
 │ + comun.js/comun.css │      │  ├─ guard.js     Ledger Guard          │      └─────────────────┘
@@ -121,6 +121,10 @@ Principios:
 ### Sobre el agente de la demo
 
 `src/agente.js` convierte lo que llega (un pedido o un documento de proveedor) en una propuesta de compra. Es ingenuo **a propósito**: obedece lo que dice el documento, como un LLM manipulado por instrucciones ocultas. Así se ve que la defensa no depende de que el modelo se porte bien, sino del Ledger Guard. Cambiarlo por Claude con tool use no cambia el contrato (texto → propuesta).
+
+### Pedido en lenguaje natural (Claude)
+
+En la pantalla del solicitante, "Pedir en tus palabras" manda el texto a `POST /api/intents/interpretar`. `src/pedidoNatural.js` llama a Claude (`claude-opus-5-5`, esfuerzo bajo, salida estructurada validada con `zod`, `fallbacks: "default"` si el clasificador de seguridad rechaza) y devuelve centro de costo, categoría, búsqueda en inglés, cantidad y tope. Claude **solo propone**: el solicitante revisa el formulario y confirma, y el intent pasa por las mismas validaciones, la política de compras y el Ledger Guard. Si el empleado da el tope en pesos o no lo da, Claude lo deja vacío y pide completarlo; no convierte monedas ni inventa montos.
 
 ## 5. Catálogo de cuentas
 
@@ -162,7 +166,8 @@ JPay/
 
 ### Requisitos
 
-- Node 22.9 o superior (sin dependencias, no hay `npm install`)
+- Node 22.9 o superior y `npm install` (dos dependencias: `@anthropic-ai/sdk` y `zod`, para el pedido en lenguaje natural)
+- API key de Anthropic (opcional): sin ella todo funciona salvo "Pedir en tus palabras"
 - API key del sandbox de Reap (se entrega en persona al líder del equipo)
 - URL **HTTPS** pública para los `returnUrl` de Reap: túnel o deploy
 
@@ -170,6 +175,7 @@ JPay/
 
 ```bash
 cp .env.example .env
+npm install
 npm test
 npm start
 ```
@@ -232,7 +238,7 @@ Probado contra el sandbox: búsquedas en inglés y en español devuelven Brookli
 Siguiente, dentro del mismo contrato:
 
 - Bot de Telegram como entrada de pedidos y canal donde el guard explica sus bloqueos.
-- Claude con tool use en `agente.js` (el guard no cambia).
+- Claude también en `agente.js` para leer documentos de proveedor (el guard no cambia). El pedido en lenguaje natural ya usa Claude (`src/pedidoNatural.js`).
 - Postgres con trigger que rechace asientos descuadrados, en lugar de `data/jpay.json`.
 - Lectura de CFDI (XML) y PDF para el match de facturas.
 
