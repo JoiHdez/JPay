@@ -330,6 +330,8 @@ const ESTATICOS = {
   '/comun.js': ['comun.js', 'text/javascript; charset=utf-8'],
   '/comun.css': ['comun.css', 'text/css; charset=utf-8'],
   '/errores.js': ['errores.js', 'text/javascript; charset=utf-8'],
+  '/logo.svg': ['logo.svg', 'image/svg+xml'],
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
 };
 
 const responder = (res, status, datos) => {

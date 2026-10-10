@@ -12,6 +12,27 @@ export function el(tag, props = {}, ...hijos) {
   return e;
 }
 
+// Marca y titulo compartidos; cada pantalla conserva sus enlaces y acciones.
+async function montarEncabezados() {
+  const encabezados = document.querySelectorAll('[data-encabezado]');
+  if (!encabezados.length) return;
+  const logos = [];
+  for (const encabezado of encabezados) {
+    const logo = el('a', { className: 'logo', href: '/', ariaLabel: 'J-Pay · Inicio' });
+    encabezado.prepend(logo, el('div', {},
+      el('h1', { textContent: encabezado.dataset.titulo }),
+      encabezado.dataset.subtitulo ? el('div', { className: 'sub', textContent: encabezado.dataset.subtitulo }) : null));
+    logos.push(logo);
+  }
+  // Insertarlo inline permite que currentColor herede el color del encabezado.
+  const respuesta = await fetch('/logo.svg');
+  if (!respuesta.ok) throw new Error('No se pudo cargar la marca de J-Pay.');
+  const marca = new DOMParser().parseFromString(await respuesta.text(), 'image/svg+xml').documentElement;
+  for (const logo of logos) logo.append(document.importNode(marca, true));
+}
+
+montarEncabezados().catch((error) => console.error(error.message));
+
 export async function api(ruta, cuerpo) {
   const r = await fetch(ruta, cuerpo ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) } : {});
   const d = await r.json().catch(() => ({}));
