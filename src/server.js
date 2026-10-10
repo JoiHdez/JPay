@@ -14,6 +14,7 @@ import { CATEGORIAS, CENTROS, CUENTAS } from './catalogo.js';
 import * as L from './ledger.js';
 import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
+import { atenderAprobacion } from './reap-sim.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
 // 400 AGENTIC_REQUEST_REJECTED {field: shippingAddress} hasta el primer pedido; mejor no arrancar.
@@ -331,6 +332,8 @@ createServer(async (req, res) => {
       res.writeHead(303, { Location: await retorno(url) });
       return res.end();
     }
+    // Hace las veces de la pagina alojada de checkout de Reap; solo existe sin REAP_API_KEY.
+    if (modoReap === 'simulado' && url.pathname === '/sim/aprobar') return await atenderAprobacion(req, res, url);
     const ruta = rutas[`${req.method} ${url.pathname}`];
     if (!ruta) return responder(res, 404, { error: 'No existe' });
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
