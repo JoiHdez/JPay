@@ -17,6 +17,7 @@ import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
 import { atenderAprobacion } from './reap-sim.js';
+import { leerCheckout, cierreDelCheckout } from './checkout.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
 // 400 AGENTIC_REQUEST_REJECTED {field: shippingAddress} hasta el primer pedido; mejor no arrancar.
@@ -115,25 +116,34 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
   registrarGuard(intent, resultado, contexto);
 }
 
-// Lee el checkout y contabiliza. Solo COMPLETED devenga; FAILED y EXPIRED son finales y liberan.
+// Lee el checkout y contabiliza; src/checkout.js decide que publicar. REQUIRES_ACTION y PROCESSING
+// siguen en checkout: /api/estado y /retorno vuelven a consultar hasta COMPLETED, FAILED o EXPIRED.
 async function conciliar(intent) {
   if (intent.estado !== 'EN_CHECKOUT' || !intent.checkoutId) return;
-  const c = await reapApi.consultarCheckout(intent.checkoutId);
-  if (c.status === 'FAILED' || c.status === 'EXPIRED') {
-    intent.estado = c.status === 'FAILED' ? 'FALLIDO' : 'EXPIRADO';
-    publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, `Libera compromiso: checkout ${c.status}`);
-    await guardar();
-    return;
+  const lectura = leerCheckout(await reapApi.consultarCheckout(intent.checkoutId));
+  // Otra consulta pudo cerrar el intent mientras esta esperaba a Reap: no se publica dos veces.
+  if (intent.estado !== 'EN_CHECKOUT' || !lectura.estado) return;
+  const antes = JSON.stringify([intent.checkout, intent.error]);
+  intent.checkout = {
+    ...intent.checkout,
+    checkoutId: intent.checkoutId,
+    estadoReap: lectura.estado,
+    urlAprobacion: lectura.estado === 'REQUIRES_ACTION' ? lectura.urlAprobacion || intent.checkout?.urlAprobacion || null : null,
+    orderId: lectura.orderId,
+    finalAmount: lectura.finalCents,
+  };
+  const cierre = cierreDelCheckout({ intent, lectura });
+  if (cierre) {
+    if (cierre.error && cierre.error !== intent.error) console.error(`${intent.id}: ${cierre.error}`);
+    intent.error = cierre.error;
   }
-  if (c.status !== 'COMPLETED') return;
-  intent.estado = 'COMPLETADO';
-  intent.orderId = c.orderId;
-  intent.finalUsd = monto(c.finalAmount ?? intent.totalUsd);
-  for (const a of L.devengado({ pre: intent.pre, finalCheckout: intent.finalUsd, cc: intent.cc })) {
-    publicar(a, intent, a.tipo === 'AJUSTE' ? `Ajuste: Reap cobro distinto a lo cotizado (orden ${c.orderId})` : `${intent.producto.nombre} · ${intent.producto.tienda} · orden ${c.orderId}`);
+  if (cierre?.estado) {
+    cierre.asientos.forEach((a) => L.validar(a)); // se publican todos o ninguno
+    for (const { concepto, ...a } of cierre.asientos) publicar(a, intent, concepto);
+    intent.estado = cierre.estado;
+    if (cierre.estado === 'COMPLETADO') Object.assign(intent, { orderId: lectura.orderId, finalUsd: L.usd(lectura.finalCents) });
   }
-  publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, 'Libera compromiso: pago completado');
-  await guardar();
+  if (cierre?.estado || JSON.stringify([intent.checkout, intent.error]) !== antes) await guardar();
 }
 
 const rutas = {
@@ -255,6 +265,7 @@ const rutas = {
     try {
       const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
       intent.checkoutId = c.id;
+      intent.checkout = { checkoutId: c.id, urlAprobacion: c.nextAction?.url || null, estadoReap: c.status, orderId: null, finalAmount: null };
       await guardar();
       return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
     } catch (e) {

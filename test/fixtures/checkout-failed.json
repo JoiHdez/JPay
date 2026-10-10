@@ -1,0 +1,10 @@
+{
+  "id": "<checkout-id>",
+  "status": "FAILED",
+  "quoteId": "<quote-id>",
+  "enrollmentId": "<enrollment-id>",
+  "orderId": null,
+  "nextAction": null,
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:05:00Z"
+}
