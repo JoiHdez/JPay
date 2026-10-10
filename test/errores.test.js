@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { explicarError, cuentaRegresiva, restante, motivosBloqueo } from '../public/errores.js';
+import { explicarError, errorHttp, resultadoAutorizar, cuentaRegresiva, restante, motivosBloqueo } from '../public/errores.js';
 
 test('explicarError: shippingAddress faltante en la cotizacion', () => {
   const t = 'Reap 400 en /agentic/quotes: AGENTIC_REQUEST_REJECTED Invalid request {"field":"shippingAddress","reason":"required"}';
@@ -25,9 +25,37 @@ test('explicarError: sin conexion, campo generico y estados de Reap', () => {
 test('explicarError: mensajes propios del servidor y vacios', () => {
   assert.equal(explicarError(''), null);
   assert.equal(explicarError(undefined), null);
-  assert.deepEqual(explicarError('Algo falló'), { claro: 'Algo falló', tecnico: null });
+  // "Algo falló" nunca va solo: dice que falta el detalle y trae algo que desplegar.
+  const generico = explicarError('Algo falló');
+  assert.match(generico.claro, /no llegó el detalle/);
+  assert.ok(generico.tecnico);
   assert.match(explicarError('Ledger Guard bloqueo el pago: TOPE').claro, /bloqueó el pago: TOPE/);
   assert.match(explicarError('La cotizacion de Reap expiro; cotiza de nuevo.').claro, /expiró/);
+});
+
+test('autorizar: el tunel cambia el 502 por HTML y el error conserva el detalle', () => {
+  // Lo que regresa un tunel de Cloudflare cuando el origen responde 502 o no responde.
+  const html = '<!DOCTYPE html><html><head><title>scanning-cuisine.trycloudflare.com | 502: Bad gateway</title></head><body>…</body></html>';
+  const t = errorHttp('/api/intents/aprobar', 502, html);
+  assert.equal(t, 'HTTP 502 en /api/intents/aprobar: scanning-cuisine.trycloudflare.com | 502: Bad gateway');
+  const r = explicarError(t);
+  assert.match(r.claro, /^No llegó la respuesta del servidor de J-Pay \(error 502/);
+  assert.equal(r.tecnico, t);
+  assert.equal(errorHttp('/api/estado', 200, ''), 'HTTP 200 en /api/estado');
+  assert.match(explicarError(errorHttp('/api/estado', 404, 'x')).claro, /respondió 404/);
+});
+
+test('autorizar: con url redirige; sin url muestra lo que paso con el pago', () => {
+  const url = 'https://x.trycloudflare.com/retorno?intent=INT-1';
+  assert.deepEqual(resultadoAutorizar({ url }, null), { ir: url });
+  // El checkout se completo al instante y la respuesta no trajo url (o no llego).
+  const pagado = { id: 'INT-fee635ab', estado: 'COMPLETADO', orderId: 'SIM-914341', finalUsd: 27.54, totalUsd: 27.54 };
+  assert.deepEqual(resultadoAutorizar({}, pagado), { aviso: 'Pagado · orden SIM-914341 · cobrado $27.54' });
+  assert.deepEqual(resultadoAutorizar(null, pagado), { aviso: 'Pagado · orden SIM-914341 · cobrado $27.54' });
+  assert.match(resultadoAutorizar(null, { ...pagado, estado: 'EN_CHECKOUT', orderId: undefined }).aviso, /esperando su confirmación/);
+  // Sigue pendiente: no se sabe nada, va el error con su detalle.
+  assert.equal(resultadoAutorizar(null, { ...pagado, estado: 'APROBADO' }), null);
+  assert.equal(resultadoAutorizar(null, undefined), null);
 });
 
 test('cuentaRegresiva y restante', () => {

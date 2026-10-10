@@ -30,6 +30,22 @@ export function explicarError(texto) {
   if (/no hay ".*" en las tiendas compatibles/i.test(t)) return con(`${t} Cambia la búsqueda.`);
   if (/primero registra la tarjeta/i.test(t)) return con('Primero registra la tarjeta corporativa en Reap.');
   if (/tarjeta en reap no esta active/i.test(t)) return con('La tarjeta en Reap no está activa (ACTIVE). Termina su registro.');
+  // El mensaje generico de api() en comun.js: nunca se muestra sin decir que falta el detalle.
+  if (t === 'Algo falló') {
+    return { claro: 'Algo falló y no llegó el detalle del servidor. Revisa el estado de la compra antes de reintentar.', tecnico: 'La respuesta no traía un mensaje de error de J-Pay.' };
+  }
+
+  // Respuesta que no es el JSON de J-Pay (ver errorHttp).
+  const http = t.match(/^HTTP (\d{3}) en (\S+?)(?::|$)/);
+  if (http) {
+    const s = Number(http[1]);
+    return {
+      claro: s >= 500
+        ? `No llegó la respuesta del servidor de J-Pay (error ${s} del túnel o del servidor). Revisa el estado de la compra antes de reintentar.`
+        : `El servidor de J-Pay respondió ${s} sin explicar el motivo.`,
+      tecnico: t,
+    };
+  }
 
   const reap = t.match(/^Reap (\d{3}) en (\S+?):/);
   if (!reap) return con(t);
@@ -46,6 +62,31 @@ export function explicarError(texto) {
   const campo = t.match(/"field"\s*:\s*"([^"]+)"/)?.[1];
   if (campo) return con(`Reap rechazó ${que}: el campo ${campo} no es válido.`);
   return con(`Reap rechazó ${que} (error ${status}).`);
+}
+
+/**
+ * Mensaje para una respuesta que no trae el JSON de J-Pay, como la pagina HTML que pone el tunel
+ * de Cloudflare en lugar de cualquier 502. Conserva status, ruta y un extracto para el detalle.
+ */
+export function errorHttp(ruta, status, cuerpo = '') {
+  const texto = String(cuerpo);
+  const titulo = texto.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1];
+  const extracto = (titulo ?? texto).replace(/\s+/g, ' ').trim().slice(0, 300);
+  return `HTTP ${status} en ${ruta}${extracto ? `: ${extracto}` : ''}`;
+}
+
+const dolares = (n) => Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+/**
+ * Que hacer despues de pedir la autorizacion. respuesta es el cuerpo de POST /api/intents/aprobar
+ * (null si no llego) e intent es la misma compra leida otra vez de GET /api/estado.
+ * @returns {{ ir: string } | { aviso: string } | null} null: no se sabe que paso; va el error.
+ */
+export function resultadoAutorizar(respuesta, intent) {
+  if (respuesta?.url) return { ir: respuesta.url };
+  if (intent?.estado === 'COMPLETADO') return { aviso: `Pagado · orden ${intent.orderId} · cobrado ${dolares(intent.finalUsd ?? intent.totalUsd)}` };
+  if (intent?.estado === 'EN_CHECKOUT') return { aviso: 'Pago enviado a Reap; esperando su confirmación.' };
+  return null;
 }
 
 /** Milisegundos que le quedan a la cotizacion; null si no hay fecha de expiracion. */
