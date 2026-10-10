@@ -84,6 +84,20 @@ test('el estado sobrevive un reinicio: tarjeta ACTIVE, quote y checkout siguen a
   assert.deepEqual(await despues.consultarCheckout('chk_sim_perdido'), { id: 'chk_sim_perdido', status: 'EXPIRED' });
 });
 
+test('una cotización perdida devuelve 409 y pide recotizar en lugar de crear checkout', async () => {
+  const archivo = archivoNuevo();
+  const antes = crearSimulado({ archivo });
+  const q = await antes.cotizar({ variantId: 'var_prd_sim_9', cantidad: 1 });
+  await rm(archivo);
+  const despues = crearSimulado({ archivo });
+  await assert.rejects(despues.checkout({ quoteId: q.id, returnUrl: RETORNO }), (error) => {
+    assert.equal(error.status, 409);
+    assert.equal(error.codigo, 'QUOTE_EXPIRED');
+    assert.match(error.message, /recotiza/);
+    return true;
+  });
+});
+
 // Un checkout listo para aprobar, con reloj controlable para probar el vencimiento.
 async function checkoutNuevo() {
   const reloj = { t: Date.parse('2026-10-10T18:00:00Z') };

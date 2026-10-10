@@ -162,7 +162,7 @@ export function crearSimulado({ archivo, ahora = () => Date.now() }) {
       const datos = leer();
       if (clave && datos.claves[clave]) return copia(datos.checkouts[datos.claves[clave]]);
       const q = datos.quotes[quoteId];
-      if (!q) throw fallaReap(404, '/agentic/checkouts', 'NOT_FOUND', `Quote ${quoteId} not found`);
+      if (!q) throw fallaReap(409, '/agentic/checkouts', 'QUOTE_EXPIRED', 'La cotización simulada se perdió al reiniciar el servidor; recotiza.');
       if (new Date(q.expiresAt).getTime() <= ahora()) throw fallaReap(409, '/agentic/checkouts', 'QUOTE_EXPIRED', `Quote ${quoteId} expired`);
       const id = `chk_sim_${randomUUID().slice(0, 8)}`;
       datos.checkouts[id] = {

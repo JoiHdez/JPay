@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixture sintetico: estructura CFDI 4.0; sellos y certificados ficticios, sin validez fiscal. -->
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+  xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.sat.gob.mx/cfd/4 http://www.sat.gob.mx/sitio_internet/cfd/4/cfdv40.xsd http://www.sat.gob.mx/TimbreFiscalDigital http://www.sat.gob.mx/sitio_internet/cfd/TimbreFiscalDigital/TimbreFiscalDigitalv11.xsd"
+  Version="4.0" Serie="JP" Folio="1001" Fecha="2026-09-01T10:30:00"
+  Sello="U0VMTE8tU0lOVEVUSUNP" NoCertificado="00001000000000000001"
+  Certificado="Q0VSVElGSUNBRE8tU0lOVEVUSUNP" FormaPago="01" MetodoPago="PUE"
+  SubTotal="100.00" Moneda="MXN" Total="116.00" TipoDeComprobante="I"
+  Exportacion="01" LugarExpedicion="06000">
+  <cfdi:Emisor Rfc="JPA010101AA1" Nombre="Comercio sin coincidencia" RegimenFiscal="601"/>
+  <cfdi:Receptor Rfc="JPY010101AA1" Nombre="J-Pay"
+    DomicilioFiscalReceptor="06000" RegimenFiscalReceptor="601" UsoCFDI="G03"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="44121701" Cantidad="1" ClaveUnidad="H87" Unidad="Pieza"
+      Descripcion="Material de oficina" ValorUnitario="100.00" Importe="100.00" ObjetoImp="02">
+      <cfdi:Impuestos>
+        <cfdi:Traslados>
+          <cfdi:Traslado Base="100.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.160000" Importe="16.00"/>
+        </cfdi:Traslados>
+      </cfdi:Impuestos>
+    </cfdi:Concepto>
+  </cfdi:Conceptos>
+  <cfdi:Impuestos TotalImpuestosTrasladados="16.00">
+    <cfdi:Traslados>
+      <cfdi:Traslado Base="100.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.160000" Importe="16.00"/>
+    </cfdi:Traslados>
+  </cfdi:Impuestos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital Version="1.1" UUID="D4BB25A0-CC70-4A10-8AE7-AB1234560003"
+      FechaTimbrado="2026-09-01T10:31:00" RfcProvCertif="SAT970701NN3"
+      SelloCFD="U0VMTE8tU0lOVEVUSUNP" NoCertificadoSAT="00001000000000000002"
+      SelloSAT="U0VMTE8tU0lOVEVUSUNP"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>
