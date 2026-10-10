@@ -155,6 +155,8 @@ const simulado = {
   elegirEnvio: async (quoteId) => memoria.get(quoteId),
   async checkout({ quoteId, enrollmentId, returnUrl }) {
     const q = memoria.get(quoteId);
+    // Las cotizaciones simuladas viven en memoria: si el servidor se reinicio, ya no existen.
+    if (!q) throw Object.assign(new Error('La cotización simulada se perdió al reiniciar el servidor; recotiza.'), { status: 409 });
     const c = {
       id: `chk_sim_${randomUUID().slice(0, 8)}`,
       status: 'COMPLETED',
