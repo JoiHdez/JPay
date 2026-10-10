@@ -1,6 +1,7 @@
 // Lectura del checkout de Reap y reglas del pago que no necesitan red ni estado: el servidor llama
 // a Reap y publica; aqui solo se interpreta la respuesta, para probarlo con fixtures de la doc.
 import * as L from './ledger.js';
+import { CUENTAS_DE_CONSUMO } from './catalogo.js';
 
 export const NO_SE_COBRO = 'Reap no completo el pago. No se cobro nada.';
 
@@ -49,7 +50,13 @@ export function cierreDelCheckout({ intent, lectura }) {
     ...a,
     concepto: a.tipo === 'AJUSTE' ? `Ajuste: Reap cobro distinto a lo cotizado (orden ${orden})` : `${intent.producto.nombre} · ${intent.producto.tienda} · orden ${orden}`,
   }));
+  // Lo pagado sale del disponible (8000) contra lo autorizado (8900): el neto de las cuentas de consumo
+  // del devengado y su ajuste a 5900. El IVA acreditable (1300) no es consumo y queda fuera solo.
+  const consumido = asientos.flatMap((a) => a.lineas)
+    .filter((l) => l.cc === intent.cc && CUENTAS_DE_CONSUMO.includes(Number(l.cuenta)))
+    .reduce((s, l) => s + (l.debe || 0) - (l.haber || 0), 0);
   asientos.push(libera('Libera compromiso: pago completado'));
+  if (consumido > 0) asientos.push({ ...L.consumoPresupuesto(intent.cc, consumido), concepto: `Consumo de presupuesto: orden ${orden}` });
   return { estado: 'COMPLETADO', error: null, asientos };
 }
 

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { leerCheckout, cierreDelCheckout, desglose, porVencer, crearThrottle, NO_SE_COBRO } from '../src/checkout.js';
-import { preAsiento, cuadra } from '../src/ledger.js';
+import { preAsiento, cuadra, aperturaPresupuesto, compromiso, presupuestos, balanza } from '../src/ledger.js';
 
 // checkout-completed.json es la respuesta de ejemplo de GET /agentic/checkouts/:id en
 // docs.reap.global/agentic-payments/one-time-purchases ("Confirm the order"). La doc no trae
@@ -44,7 +44,7 @@ test('COMPLETED igual a lo cotizado: devengado por finalAmount y liberacion del 
   const c = cierreDelCheckout({ intent: exacto, lectura: leerCheckout(completed) });
   assert.equal(c.estado, 'COMPLETADO');
   assert.equal(c.error, null);
-  assert.deepEqual(tipos(c), ['DEVENGADO', 'LIBERACION']);
+  assert.deepEqual(tipos(c), ['DEVENGADO', 'LIBERACION', 'CONSUMO_PRESUPUESTO']);
   assert.ok(c.asientos.every(cuadra));
   assert.equal(linea(c.asientos[0], 2100).haber, 13400);
   assert.equal(linea(c.asientos[1], 8100).haber, 15000);
@@ -53,7 +53,7 @@ test('COMPLETED igual a lo cotizado: devengado por finalAmount y liberacion del 
 
 test('COMPLETED distinto a lo cotizado: la diferencia va a 5900, en los dos sentidos', () => {
   const menos = cierreDelCheckout({ intent: caro, lectura: leerCheckout(completed) });
-  assert.deepEqual(tipos(menos), ['DEVENGADO', 'AJUSTE', 'LIBERACION']);
+  assert.deepEqual(tipos(menos), ['DEVENGADO', 'AJUSTE', 'LIBERACION', 'CONSUMO_PRESUPUESTO']);
   assert.deepEqual(menos.asientos[1].lineas, [{ cuenta: 2100, debe: 800 }, { cuenta: 5900, cc: 'IT', haber: 800 }]);
 
   const mas = cierreDelCheckout({ intent: exacto, lectura: leerCheckout({ ...completed, finalAmount: { amount: '135.50', currency: 'USD' } }) });
@@ -127,4 +127,38 @@ test('throttle: una llamada por clave cada 3 s, en vuelo o resuelta, tambien si 
   await assert.rejects(llamar('chk:2', caida), /Sin conexion/);
   await assert.rejects(llamar('chk:2', caida), /Sin conexion/);
   assert.equal(fallas, 1);
+});
+
+// Libro de un pago completo: apertura del CC, compromiso del tope y lo que publica el cierre.
+function pagar(intent, cobrado) {
+  const cierre = cierreDelCheckout({ intent, lectura: leerCheckout({ ...completed, finalAmount: { amount: cobrado, currency: 'USD' } }) });
+  const libro = [aperturaPresupuesto('IT', 40000, '2026-10'), compromiso({ cc: 'IT', monto: 15000 }), ...cierre.asientos].map((a) => ({ ...a, estado: 'PUBLICADO' }));
+  const saldo8000 = libro.flatMap((a) => a.lineas).filter((l) => l.cuenta === 8000 && l.cc === 'IT').reduce((s, l) => s + (l.debe || 0) - (l.haber || 0), 0);
+  return { cierre, libro, saldo8000, consumo: cierre.asientos.find((a) => a.tipo === 'CONSUMO_PRESUPUESTO') };
+}
+
+test('consumo de presupuesto: 8000 del CC = apertura - consumido despues de pagar y liberar', () => {
+  const { libro, saldo8000, consumo } = pagar(exacto, 134);
+  assert.deepEqual(consumo.lineas, [{ cuenta: 8900, cc: 'IT', debe: 13400 }, { cuenta: 8000, cc: 'IT', haber: 13400 }]);
+  assert.equal(saldo8000, 40000 - 13400);
+  assert.equal(presupuestos(libro).find((p) => p.cc === 'IT').consumido, 13400);
+  assert.ok(balanza(libro).cuadra);
+});
+
+test('consumo de presupuesto: un ajuste 5900 negativo descuenta lo que no se cobro', () => {
+  const { consumo, saldo8000 } = pagar(caro, 134); // cotizado 142, cobrado 134: ajuste 5900 haber 800
+  assert.equal(consumo.lineas[0].debe, 14200 - 800);
+  assert.equal(saldo8000, 40000 - 13400);
+});
+
+test('consumo de presupuesto: el impuesto en 1300 (comercio MX) no consume; neto 0 no se publica', () => {
+  const b = { itemsSubtotal: usd(124), shipping: usd(5), tax: { amount: usd(5), includedInPrices: false }, finalAmount: usd(134) };
+  const mx = { ...exacto, pre: preAsiento({ cc: 'IT', cuenta: 5100, breakdown: b, paisComercio: 'MX' }) };
+  const { consumo, saldo8000 } = pagar(mx, 134);
+  assert.equal(consumo.lineas[0].debe, 12900);
+  assert.equal(saldo8000, 40000 - 12900);
+
+  const soloImpuesto = { itemsSubtotal: usd(0), tax: { amount: usd(5), includedInPrices: false }, finalAmount: usd(5) };
+  const sinConsumo = { ...exacto, pre: preAsiento({ cc: 'IT', cuenta: 5100, breakdown: soloImpuesto, paisComercio: 'MX' }) };
+  assert.deepEqual(tipos(pagar(sinConsumo, 5).cierre), ['DEVENGADO', 'LIBERACION']);
 });
