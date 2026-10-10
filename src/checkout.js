@@ -52,3 +52,19 @@ export function cierreDelCheckout({ intent, lectura }) {
   asientos.push(libera('Libera compromiso: pago completado'));
   return { estado: 'COMPLETADO', error: null, asientos };
 }
+
+/** amountBreakdown de un quote en centavos, con los nombres del contrato. */
+export function desglose(b) {
+  const c = (m) => aCentavos(m?.amount ?? m) ?? 0;
+  return {
+    producto: c(b?.itemsSubtotal),
+    envio: c(b?.shipping),
+    impuesto: c(b?.tax?.amount),
+    descuento: (b?.discounts || []).reduce((s, d) => s + c(d.amount ?? d), 0),
+    total: c(b?.finalAmount),
+  };
+}
+
+/** true si a la cotizacion le queda menos del margen (o ya vencio): el checkout la rechazaria. */
+export const porVencer = (expira, ahora = Date.now(), margenMs = 60000) => Boolean(expira) && new Date(expira).getTime() - ahora < margenMs;
+

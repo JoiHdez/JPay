@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { leerCheckout, cierreDelCheckout, NO_SE_COBRO } from '../src/checkout.js';
+import { leerCheckout, cierreDelCheckout, desglose, porVencer, NO_SE_COBRO } from '../src/checkout.js';
 import { preAsiento, cuadra } from '../src/ledger.js';
 
 // checkout-completed.json es la respuesta de ejemplo de GET /agentic/checkouts/:id en
@@ -88,4 +88,23 @@ test('FAILED y EXPIRED liberan el compromiso una vez y dicen que no se cobro', (
   assert.equal(e.estado, 'EXPIRADO');
   assert.match(e.error, /No se cobro nada/);
   assert.deepEqual(tipos(e), ['LIBERACION']);
+});
+
+test('desglose del quote en centavos, con los nombres del contrato', () => {
+  // Respuesta de POST /agentic/quotes de la doc (one-time-purchases), con un descuento agregado.
+  const b = {
+    itemsSubtotal: usd(129), shipping: usd(13), tax: { amount: usd(5), includedInPrices: false },
+    discounts: [{ amount: usd(10) }], additionalCharges: [], finalAmount: usd(142),
+  };
+  assert.deepEqual(desglose(b), { producto: 12900, envio: 1300, impuesto: 500, descuento: 1000, total: 14200 });
+  assert.deepEqual(desglose({ finalAmount: { amount: '32.56', currency: 'USD' } }), { producto: 0, envio: 0, impuesto: 0, descuento: 0, total: 3256 });
+});
+
+test('porVencer: recotiza con menos de 60 s o ya vencida', () => {
+  const ahora = Date.parse('2026-10-10T00:00:00Z');
+  assert.equal(porVencer('2026-10-10T00:05:00Z', ahora), false);
+  assert.equal(porVencer('2026-10-10T00:01:00Z', ahora), false);
+  assert.equal(porVencer('2026-10-10T00:00:59Z', ahora), true);
+  assert.equal(porVencer('2026-10-09T23:59:00Z', ahora), true);
+  assert.equal(porVencer(null, ahora), false);
 });

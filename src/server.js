@@ -17,7 +17,7 @@ import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
 import { atenderAprobacion } from './reap-sim.js';
-import { leerCheckout, cierreDelCheckout } from './checkout.js';
+import { leerCheckout, cierreDelCheckout, desglose, porVencer } from './checkout.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
 // 400 AGENTIC_REQUEST_REJECTED {field: shippingAddress} hasta el primer pedido; mejor no arrancar.
@@ -109,6 +109,7 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
     quoteId: quote.id, expira: quote.expiresAt, producto, propuesta,
     pre: { ...pre, estado: 'PROPUESTO' },
     totalUsd: monto(quote.amountBreakdown.finalAmount),
+    desglose: desglose(quote.amountBreakdown), // centavos; el 409 TOTAL_CAMBIO lo devuelve
     envioNombre: (quote.shippingOptions || []).find((o) => o.id === propuesta.envioId)?.name || null,
     guard: resultado,
     cotizacion: resultado.permitido ? 'LISTA' : 'BLOQUEADA',
@@ -160,21 +161,39 @@ async function soltarReclamo(intent) {
   await guardar();
 }
 
-// El compromiso ya reservo el tope, asi que aqui basta con que la cotizacion haya pasado el guard
-// y siga vigente.
+// El compromiso ya reservo el tope, asi que aqui basta con que la cotizacion haya pasado el guard,
+// siga vigente y su total sea el que vio el aprobador.
 async function autorizar(intent, b) {
-  if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+  if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`, { codigo: 'TRANSICION_INVALIDA' });
+  if (b.confirmarTotal != null && !Number.isInteger(b.confirmarTotal)) throw falla(400, 'confirmarTotal va en centavos enteros.');
+  // Lo que vio el aprobador: confirmarTotal si lo manda; si no, el ultimo total que sirvio /api/estado.
+  const visto = b.confirmarTotal ?? (intent.totalUsd != null ? L.centavos(intent.totalUsd) : null);
+
+  // Reap rechaza el checkout de un quote vencido (409 QUOTE_EXPIRED) y el quote dura unos 5 min. Si le
+  // queda menos de un minuto, se recotiza aqui igual que en /api/intents/recotizar y pasa otra vez el guard.
+  const soloVencida = intent.cotizacion === 'BLOQUEADA' && intent.guard?.violaciones?.length > 0 && intent.guard.violaciones.every((v) => v.codigo === 'QUOTE_EXPIRADO');
+  if ((intent.cotizacion === 'LISTA' && porVencer(intent.expira)) || soloVencida) {
+    try {
+      evaluar(intent, await cotizar(intent, { cantidad: intent.cantidad }, `re-${Date.now()}`), 'Recotizacion al autorizar: la cotizacion vencia');
+    } catch (e) {
+      if (intent.expira && new Date(intent.expira) <= new Date()) {
+        intent.cotizacion = 'BLOQUEADA';
+        intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
+        registrarGuard(intent, intent.guard, 'Intento de pago');
+      }
+      await guardar();
+      throw falla(e.status && e.status < 500 ? e.status : 502, `La cotizacion de Reap expiro y no se pudo recotizar: ${e.message}`, { codigo: 'QUOTE_EXPIRADO' });
+    }
+    await guardar();
+  }
   if (intent.cotizacion !== 'LISTA') {
     registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
     await guardar();
-    throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`);
+    throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`, { codigo: intent.guard ? 'GUARD_BLOQUEO' : 'SIN_COTIZACION' });
   }
-  if (intent.expira && new Date(intent.expira) <= new Date()) {
-    intent.cotizacion = 'BLOQUEADA';
-    intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
-    registrarGuard(intent, intent.guard, 'Intento de pago');
-    await guardar();
-    throw falla(409, 'La cotizacion de Reap expiro; cotiza de nuevo.');
+  const total = L.centavos(intent.totalUsd);
+  if (visto !== total) {
+    throw falla(409, `El total cambio: se vio USD ${L.usd(visto)} y Reap cotiza ahora USD ${L.usd(total)}. Revisa el desglose y confirma el nuevo total.`, { codigo: 'TOTAL_CAMBIO', detalle: { desglose: intent.desglose, totalAnterior: visto } });
   }
   if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
   if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
@@ -190,6 +209,9 @@ async function autorizar(intent, b) {
     return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
   } catch (e) {
     intent.estado = 'APROBADO';
+    // Se conserva el mensaje de Reap (la pantalla lo traduce) y se agrega el codigo del contrato.
+    if (e.codigo === 'QUOTE_EXPIRED') intent.expira = new Date().toISOString(); // el siguiente intento recotiza
+    if (e.status >= 400 && e.status < 500) e.extra = { codigo: e.codigo === 'QUOTE_EXPIRED' ? 'QUOTE_EXPIRADO' : 'REAP_RECHAZO' };
     await guardar();
     throw e;
   }
@@ -345,9 +367,11 @@ async function retorno(url) {
   return `/finanzas.html?intent=${intent.id}`;
 }
 
-function falla(status, mensaje) {
+// extra ({ codigo, detalle } del contrato) se suma a la respuesta; `error` sigue siendo texto.
+function falla(status, mensaje, extra) {
   const e = new Error(mensaje);
   e.status = status;
+  e.extra = extra;
   return e;
 }
 
@@ -395,7 +419,7 @@ createServer(async (req, res) => {
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
   } catch (e) {
     if (!e.status || e.status >= 500) console.error(e.message);
-    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
+    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message, ...e.extra });
   }
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap}, checkout ${modoCheckout})`);
