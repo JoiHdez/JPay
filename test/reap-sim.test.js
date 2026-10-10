@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { simulado as sim } from '../src/reap-sim.js';
 import { revisar } from '../src/guard.js';
-import { preAsiento } from '../src/ledger.js';
+import { preAsiento, cuadra, centavos } from '../src/ledger.js';
 import { proponer } from '../src/agente.js';
 import { CATEGORIAS } from '../src/catalogo.js';
 
@@ -42,4 +42,16 @@ test('la busqueda pone primero lo mas parecido y conserva el catalogo de aef8f3a
     assert.equal((await sim.buscar({ query: q })).products.length, 1, q);
   }
   assert.deepEqual((await sim.buscar({ query: 'gaming chair' })).products, []);
+});
+
+test('elegir envio recalcula el total y marca la opcion, y el pre-asiento sigue cuadrando', async () => {
+  const q = await sim.cotizar({ variantId: 'var_prd_sim_6', cantidad: 1 });
+  const exp = await sim.elegirEnvio(q.id, 'exp');
+  assert.equal(exp.id, q.id);
+  assert.deepEqual(exp.shippingOptions.map((o) => [o.id, o.selected]), [['std', false], ['exp', true]]);
+  assert.equal(exp.amountBreakdown.shipping.amount, 12.99);
+  assert.equal(centavos(exp.amountBreakdown.finalAmount.amount) - centavos(q.amountBreakdown.finalAmount.amount), 700);
+  assert.ok(cuadra(preAsiento({ cc: 'OPS', cuenta: 5100, breakdown: exp.amountBreakdown })));
+  await assert.rejects(sim.elegirEnvio(q.id, 'dron'), { status: 400, codigo: 'AGENTIC_REQUEST_REJECTED' });
+  await assert.rejects(sim.elegirEnvio('quo_no_existe', 'std'), { status: 404 });
 });

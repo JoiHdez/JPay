@@ -17,7 +17,33 @@ export const CATALOGO = [
   { id: 'prd_sim_9', merchant: 'ZM Desktop', name: 'Modular Space-Saving Laptop Stand - Black Walnut', price: 58, tags: ['laptop', 'stand', 'soporte'] },
 ];
 const memoria = new Map();
-const usd = (amount) => ({ amount: Math.round(amount * 100) / 100, currency: 'USD' });
+
+const ENVIOS = [
+  { id: 'std', name: 'Standard', centavos: 599 },
+  { id: 'exp', name: 'Express', centavos: 1299 },
+];
+
+const usd = (centavos) => ({ amount: centavos / 100, currency: 'USD' });
+const centavos = (m) => Math.round(Number(m) * 100);
+
+// En centavos para que subtotal + envio + impuesto sumen exacto finalAmount; si no, el pre-asiento descuadra.
+function desglose(subtotal, envio) {
+  const tax = Math.round(subtotal * 0.08);
+  return {
+    itemsSubtotal: usd(subtotal),
+    shipping: usd(envio),
+    tax: { amount: usd(tax), includedInPrices: false },
+    finalAmount: usd(subtotal + envio + tax),
+  };
+}
+
+// Mismo formato de error que el cliente real, para que server.js lo trate igual.
+function fallaReap(status, ruta, code, message) {
+  const e = new Error(`Reap ${status} en ${ruta}: ${code} ${message}`);
+  e.status = status;
+  e.codigo = code;
+  return e;
+}
 
 // Como Reap: lo mas parecido a la busqueda sale primero, y el servidor cotiza el primero que surta.
 const relevancia = (p, q) => {
@@ -48,31 +74,34 @@ export const simulado = {
         merchant: { name: p.merchant },
         name: p.name,
         available: true,
-        previewVariant: { id: `var_${p.id}`, name: p.name, price: usd(p.price), available: true },
+        previewVariant: { id: `var_${p.id}`, name: p.name, price: usd(centavos(p.price)), available: true },
       })),
     };
   },
   async cotizar({ variantId, cantidad }) {
     const p = CATALOGO.find((x) => `var_${x.id}` === variantId);
-    const sub = p.price * cantidad;
+    if (!p) throw fallaReap(404, '/agentic/quotes', 'NOT_FOUND', `Variant ${variantId} not found`);
     const q = {
       id: `quo_sim_${randomUUID().slice(0, 8)}`,
-      shippingOptions: [
-        { id: 'std', name: 'Standard', selected: true, price: usd(5.99) },
-        { id: 'exp', name: 'Express', selected: false, price: usd(12.99) },
-      ],
-      amountBreakdown: {
-        itemsSubtotal: usd(sub),
-        shipping: usd(5.99),
-        tax: { amount: usd(sub * 0.08), includedInPrices: false },
-        finalAmount: usd(sub * 1.08 + 5.99),
-      },
+      items: [{ variantId, quantity: cantidad, name: p.name, merchant: { name: p.merchant } }],
+      shippingOptions: ENVIOS.map((o, i) => ({ id: o.id, name: o.name, selected: i === 0, price: usd(o.centavos) })),
+      amountBreakdown: desglose(centavos(p.price) * cantidad, ENVIOS[0].centavos),
       expiresAt: new Date(Date.now() + 15 * 60000).toISOString(),
     };
     memoria.set(q.id, q);
-    return q;
+    return structuredClone(q);
   },
-  elegirEnvio: async (quoteId) => memoria.get(quoteId),
+  // Como en Reap, cambiar el envio recalcula amountBreakdown y marca la opcion elegida.
+  async elegirEnvio(quoteId, shippingOptionId) {
+    const ruta = `/agentic/quotes/${quoteId}/shipping-option`;
+    const q = memoria.get(quoteId);
+    if (!q) throw fallaReap(404, ruta, 'NOT_FOUND', `Quote ${quoteId} not found`);
+    const opcion = q.shippingOptions.find((o) => o.id === shippingOptionId);
+    if (!opcion) throw fallaReap(400, ruta, 'AGENTIC_REQUEST_REJECTED', `Unknown shippingOptionId ${shippingOptionId}`);
+    for (const o of q.shippingOptions) o.selected = o.id === shippingOptionId;
+    q.amountBreakdown = desglose(centavos(q.amountBreakdown.itemsSubtotal.amount), centavos(opcion.price.amount));
+    return structuredClone(q);
+  },
   async checkout({ quoteId, enrollmentId, returnUrl }) {
     const q = memoria.get(quoteId);
     const c = {
