@@ -6,7 +6,7 @@ J-Pay separa funciones como lo haría un control interno: **quien pide no autori
 
 | Rol | Pantalla | Rama | Servidor (rutas y módulos) |
 |---|---|---|---|
-| **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `POST /api/intents/interpretar`, `src/agente.js`, `src/politica.js`, `src/pedidoNatural.js` |
+| **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `POST /api/intents/interpretar`, `src/agente.js`, `src/politica.js`, `src/pedidoNatural.js`, `src/zonaEnvio.js` |
 | **Finanzas** (autoriza el pago) | `public/finanzas.html` | `jordy/autorizador` | `POST /api/intents/aprobar`, `POST /api/intents/rechazar`, `POST /api/intents/cambios`, `POST /api/tarjeta`, `GET /retorno`, `src/guard.js` |
 | **Contador** (registra y cierra) | `public/contador.html` | `contador` | `POST /api/facturas`, `POST /api/cierre` |
 
@@ -16,6 +16,7 @@ J-Pay separa funciones como lo haría un control interno: **quien pide no autori
 
 - `POST /api/intents` crea el intent: `{ solicitante, cc, busqueda, categoria, cantidad, maxCantidad, topeUsd }`. Responde `409` si el tope no cabe en el presupuesto del centro de costo y `422` si la búsqueda cae en viajes o en una categoría restringida (apuestas, adultos, armas; `src/politica.js`). En ambos casos no nace el intent.
 - `POST /api/intents/interpretar` `{ texto }`: Claude propone esos mismos campos a partir de lenguaje natural; no crea el intent. `501` si falta `ANTHROPIC_API_KEY`.
+- Al cotizar, solo se usan tiendas de la lista oficial (`comercios` en MongoDB) que envían al país de `REAP_ENVIO`. Si ninguna envía, responde `422` con el motivo. El producto cotizado trae `zonaEnvio: { comercio, pais }`.
 - `expira` en el intent es el vencimiento de la cotización de Reap (unos 5 minutos): finanzas autoriza antes o el solicitante recotiza.
 
 ## API del aprobador

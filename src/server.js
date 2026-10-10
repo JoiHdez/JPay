@@ -16,6 +16,7 @@ import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
+import { listaComercios, revisarZona } from './zonaEnvio.js';
 import { atenderAprobacion } from './reap-sim.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
@@ -79,11 +80,20 @@ async function cotizar(intent, { cantidad, envioCaro = false }, sufijo) {
   const busqueda = await reapApi.buscar({ query: intent.busqueda, pais: PAIS, moneda: MONEDA });
   const candidatos = (busqueda.products || []).filter((p) => p.available && p.previewVariant?.available).slice(0, 3);
   if (!candidatos.length) throw falla(404, `No hay "${intent.busqueda}" en las tiendas compatibles.`);
+  // Zona de envio: solo tiendas de la lista oficial que envian al pais de la empresa.
+  const comercios = await listaComercios();
+  const paisEnvio = ENVIO?.country || PAIS;
+  const fueraDeZona = [];
   let ultimo;
   for (const [i, p] of candidatos.entries()) {
+    const zona = comercios ? revisarZona(comercios, p.merchant?.name, paisEnvio) : null;
+    if (zona && !zona.ok) {
+      fueraDeZona.push(zona.motivo);
+      continue;
+    }
     try {
       let quote = await reapApi.cotizar({ variantId: p.previewVariant.id, cantidad, email: EMAIL, envio: ENVIO, clave: `${intent.id}-quo-${sufijo}-${i}` });
-      const producto = { id: p.id, nombre: p.name, tienda: p.merchant?.name, imagen: p.imageUrl || null };
+      const producto = { id: p.id, nombre: p.name, tienda: p.merchant?.name, imagen: p.imageUrl || null, zonaEnvio: zona ? { comercio: zona.comercio, pais: paisEnvio } : null };
       const propuesta = proponer({ producto, quote, cantidadBase: cantidad, instrucciones: { envioCaro } });
       const actual = (quote.shippingOptions || []).find((o) => o.selected);
       if (propuesta.envioId && actual?.id !== propuesta.envioId) quote = await reapApi.elegirEnvio(quote.id, propuesta.envioId);
@@ -93,7 +103,8 @@ async function cotizar(intent, { cantidad, envioCaro = false }, sufijo) {
       ultimo = e;
     }
   }
-  throw falla(422, `Ninguna tienda pudo surtir "${intent.busqueda}": ${ultimo.message}`);
+  if (!ultimo && fueraDeZona.length) throw falla(422, `Ninguna tienda compatible envía a ${paisEnvio} para "${intent.busqueda}": ${fueraDeZona.join('; ')}.`);
+  throw falla(422, `Ninguna tienda pudo surtir "${intent.busqueda}": ${ultimo.message}${fueraDeZona.length ? ` (además: ${fueraDeZona.join('; ')})` : ''}`);
 }
 
 // Arma el pre-asiento desde el quote real de Reap y lo pasa por el Ledger Guard.

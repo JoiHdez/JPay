@@ -109,6 +109,8 @@ async function cargar() {
 function tarjeta(i) {
   const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra(i));
+  const zona = i.producto?.zonaEnvio;
+  if (zona) caja.append(el('div', { className: 'muted', style: 'margin-top:4px', textContent: `Zona de envío revisada: ${zona.comercio} está en la lista oficial y envía a ${zona.pais}.` }));
   if (i.estado === 'APROBADO') {
     if (i.cotizacion === 'LISTA') {
       const vence = i.expira ? el('span', { className: 'chip warn', title: 'Reap vence la cotización; finanzas debe autorizar antes.' }) : null;

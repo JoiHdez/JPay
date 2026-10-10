@@ -200,7 +200,7 @@ La lista oficial de comercios del hackathon (152 tiendas, con países de envío,
 npm run importar:comercios
 ```
 
-Lee la hoja de Google como CSV y hace upsert por comercio, así que se puede repetir. Cada documento: `comercio`, `categoria`, `mercado`, `enviaA` (países; `*` = todo el mundo), `productoPrueba`, `variantId`, `precio`, `moneda`, `carritoUrl`, `actualizado`. Índices en `comercio` (único), `enviaA` y `mercado + categoria`. Ejemplo, tiendas que envían a EE. UU.: `db.comercios.find({ enviaA: { $in: ["US", "*"] } })`.
+Lee la hoja de Google como CSV y hace upsert por comercio, así que se puede repetir. La cotización la usa para la **zona de envío** (`src/zonaEnvio.js`): antes de cotizar con una tienda, J-Pay comprueba que esté en la lista oficial y que envíe al país de `REAP_ENVIO`; si no, pasa a la siguiente tienda, y si ninguna envía, no cotiza y dice por qué. Sin `MONGODB_URI` la revisión se omite con un aviso en consola. Cada documento: `comercio`, `categoria`, `mercado`, `enviaA` (países; `*` = todo el mundo), `productoPrueba`, `variantId`, `precio`, `moneda`, `carritoUrl`, `actualizado`. Índices en `comercio` (único), `enviaA` y `mercado + categoria`. Ejemplo, tiendas que envían a EE. UU.: `db.comercios.find({ enviaA: { $in: ["US", "*"] } })`.
 
 ### Tarjetas de prueba en MongoDB
 
@@ -241,7 +241,7 @@ Probado contra el sandbox: búsquedas en inglés y en español devuelven Brookli
 - [x] Usa el Agentic module de Reap API como núcleo del producto.
 - [x] Los pagos agénticos son el centro: sin pago agéntico no hay asiento.
 - [x] Todo corre en sandbox; checkout simulado, sin dinero real.
-- [x] Solo comercios de la lista soportada (los que devuelve la búsqueda de Reap).
+- [x] Solo comercios de la lista soportada: además de usar la búsqueda de Reap, `src/zonaEnvio.js` descarta tiendas que no están en la lista oficial o que no envían al país de la dirección de la empresa.
 - [x] Sin viajes ni categorías restringidas: `src/politica.js` rechaza el pedido antes de que nazca el intent.
 - [x] Sin scraping del checkout ni datos crudos de tarjeta al agente.
 - [x] No es un chatbot genérico de compras.
