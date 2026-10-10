@@ -186,6 +186,16 @@ cloudflared tunnel --url http://localhost:3010
 
 Pon la URL `https://...trycloudflare.com` en `PUBLIC_URL` y reinicia.
 
+### Comercios compatibles en MongoDB
+
+La lista oficial de comercios del hackathon (152 tiendas, con países de envío, producto de prueba y precio) se carga en MongoDB, colección `comercios`:
+
+```bash
+npm run importar:comercios
+```
+
+Lee la hoja de Google como CSV y hace upsert por comercio, así que se puede repetir. Cada documento: `comercio`, `categoria`, `mercado`, `enviaA` (países; `*` = todo el mundo), `productoPrueba`, `variantId`, `precio`, `moneda`, `carritoUrl`, `actualizado`. Índices en `comercio` (único), `enviaA` y `mercado + categoria`. Ejemplo, tiendas que envían a EE. UU.: `db.comercios.find({ enviaA: { $in: ["US", "*"] } })`.
+
 ### Registrar la tarjeta (una sola vez)
 
 1. En el dashboard, "Registrar tarjeta en Reap" crea un enrollment `EXTERNAL` con owner `CLIENT_REFERENCE` (la empresa).
