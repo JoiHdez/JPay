@@ -6,13 +6,28 @@
 //
 // La tarjeta nunca pasa por aqui: se guarda en la pagina alojada de Reap (enrollment) y cada
 // cargo se aprueba en otra pagina alojada (checkout). Este modulo solo maneja IDs.
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { simulado } from './reap-sim.js';
 
 const KEY = process.env.REAP_API_KEY;
 const BASE = (process.env.REAP_BASE || 'https://sandbox.api.reap.global').replace(/\/+$/, '');
 const VERSION = process.env.REAP_VERSION || '2025-02-14';
 export const modo = KEY ? 'real' : 'simulado';
+// X-Simulate-Checkout completa el checkout sin la pagina hosted; solo existe en sandbox y es opt-in,
+// para que por defecto el humano apruebe cada cargo en Reap.
+const SIMULAR_CHECKOUT = process.env.REAP_SIMULAR_CHECKOUT === '1';
+export const modoCheckout = KEY && !SIMULAR_CHECKOUT ? 'hosted' : 'simulado';
+
+/**
+ * Idempotency-Key del enrollment. Reap guarda la primera respuesta 24 h por llave: un doble clic
+ * con la misma llave recibe el mismo enrollment. La huella del cuerpo cambia la llave si cambia el
+ * returnUrl (otro tunel), porque misma llave con otro cuerpo es 400 IDEMPOTENT_PARAMETER_MISMATCH;
+ * el sufijo lo avanza el servidor cuando hace falta un enrollment nuevo.
+ */
+export function claveEnrollment({ clienteId, email, returnUrl, sufijo = 1 }) {
+  const huella = createHash('sha256').update(JSON.stringify([email, returnUrl])).digest('hex').slice(0, 12);
+  return `jpay-enr-${clienteId}-${sufijo}-${huella}`;
+}
 
 // Solo se reintenta si la conexion no llego a abrirse (la red del venue corta al azar): Reap
 // no vio la peticion, y los POST que crean algo llevan Idempotency-Key fija de todos modos.
@@ -27,6 +42,13 @@ async function conReintento(url, opciones, intentos = 4) {
     }
   }
 }
+
+/**
+ * true si Reap guardo este error con la Idempotency-Key y lo repetiria 24 h: reintentar exige otra
+ * llave. Guarda todo salvo 401, 422 y 429; 409 IDEMPOTENCY_REQUEST_IN_PROGRESS es la misma llave aun
+ * en vuelo. Sin status no hubo respuesta y la misma llave es lo seguro (api-reference/idempotency).
+ */
+export const errorGuardado = (e) => Boolean(e?.status) && ![401, 422, 429].includes(e.status) && e.codigo !== 'IDEMPOTENCY_REQUEST_IN_PROGRESS';
 
 async function reap(ruta, { metodo = 'GET', cuerpo, idempotencia, extra = {} } = {}) {
   const r = await conReintento(`${BASE}${ruta}`, {
@@ -59,10 +81,10 @@ const tapar = (v, visibles = 0) => (v ? `***${visibles ? String(v).slice(-visibl
 const enmascarar = (envio) => envio && { ...envio, phone: tapar(envio.phone, 2), addressLine1: tapar(envio.addressLine1), addressLine2: tapar(envio.addressLine2), postalCode: tapar(envio.postalCode) };
 
 const real = {
-  crearEnrollment: ({ clienteId, email, returnUrl }) =>
+  crearEnrollment: ({ clienteId, email, returnUrl, sufijo }) =>
     reap('/agentic/enrollments', {
       metodo: 'POST',
-      idempotencia: randomUUID(),
+      idempotencia: claveEnrollment({ clienteId, email, returnUrl, sufijo }),
       cuerpo: {
         source: 'EXTERNAL',
         owner: { type: 'CLIENT_REFERENCE', id: clienteId, email },
@@ -94,8 +116,9 @@ const real = {
     reap('/agentic/checkouts', {
       metodo: 'POST',
       idempotencia: clave,
-      // Solo existe en sandbox; produccion lo rechaza, y este servicio solo corre en sandbox.
-      extra: { 'X-Simulate-Checkout': 'COMPLETED' },
+      // Responde REQUIRES_ACTION con nextAction.url: la pagina hosted donde el humano aprueba.
+      // El header de simulacion solo existe en sandbox; produccion lo rechaza.
+      extra: SIMULAR_CHECKOUT ? { 'X-Simulate-Checkout': 'COMPLETED' } : {},
       cuerpo: { quoteId, enrollmentId, presentation: { type: 'REDIRECT', returnUrl } },
     }),
   consultarCheckout: (id) => reap(`/agentic/checkouts/${encodeURIComponent(id)}`),

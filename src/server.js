@@ -9,7 +9,7 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { reapApi, modo as modoReap } from './reap.js';
+import { reapApi, modo as modoReap, modoCheckout, errorGuardado } from './reap.js';
 import { CATEGORIAS, CENTROS, CUENTAS } from './catalogo.js';
 import * as L from './ledger.js';
 import { revisar } from './guard.js';
@@ -17,6 +17,7 @@ import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
 import { atenderAprobacion } from './reap-sim.js';
+import { leerCheckout, cierreDelCheckout, desglose, porVencer, crearThrottle } from './checkout.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
 // 400 AGENTIC_REQUEST_REJECTED {field: shippingAddress} hasta el primer pedido; mejor no arrancar.
@@ -108,6 +109,7 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
     quoteId: quote.id, expira: quote.expiresAt, producto, propuesta,
     pre: { ...pre, estado: 'PROPUESTO' },
     totalUsd: monto(quote.amountBreakdown.finalAmount),
+    desglose: desglose(quote.amountBreakdown), // centavos; el 409 TOTAL_CAMBIO lo devuelve
     envioNombre: (quote.shippingOptions || []).find((o) => o.id === propuesta.envioId)?.name || null,
     guard: resultado,
     cotizacion: resultado.permitido ? 'LISTA' : 'BLOQUEADA',
@@ -115,35 +117,148 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
   registrarGuard(intent, resultado, contexto);
 }
 
-// Lee el checkout y contabiliza. Solo COMPLETED devenga; FAILED y EXPIRED son finales y liberan.
+// Una consulta a Reap por recurso cada 3 s: cada pantalla abierta pide /api/estado cada 6 s y, sin
+// esto, cada vuelta repetiria un GET por checkout en vuelo y otro por la tarjeta.
+const cadaTresSegundos = crearThrottle(3000);
+
+// Lee el checkout y contabiliza; src/checkout.js decide que publicar. REQUIRES_ACTION y PROCESSING
+// siguen en checkout: /api/estado y /retorno vuelven a consultar hasta COMPLETED, FAILED o EXPIRED.
 async function conciliar(intent) {
-  if (intent.estado !== 'EN_CHECKOUT' || !intent.checkoutId) return;
-  const c = await reapApi.consultarCheckout(intent.checkoutId);
-  if (c.status === 'FAILED' || c.status === 'EXPIRED') {
-    intent.estado = c.status === 'FAILED' ? 'FALLIDO' : 'EXPIRADO';
-    publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, `Libera compromiso: checkout ${c.status}`);
-    await guardar();
-    return;
+  if (intent.estado !== 'EN_CHECKOUT') return;
+  if (!intent.checkoutId) return soltarReclamo(intent);
+  const lectura = leerCheckout(await cadaTresSegundos(`chk:${intent.checkoutId}`, () => reapApi.consultarCheckout(intent.checkoutId)));
+  // Otra consulta pudo cerrar el intent mientras esta esperaba a Reap: no se publica dos veces.
+  if (intent.estado !== 'EN_CHECKOUT' || !lectura.estado) return;
+  const antes = JSON.stringify([intent.checkout, intent.error]);
+  intent.checkout = {
+    ...intent.checkout,
+    checkoutId: intent.checkoutId,
+    estadoReap: lectura.estado,
+    urlAprobacion: lectura.estado === 'REQUIRES_ACTION' ? lectura.urlAprobacion || intent.checkout?.urlAprobacion || null : null,
+    orderId: lectura.orderId,
+    finalAmount: lectura.finalCents,
+  };
+  const cierre = cierreDelCheckout({ intent, lectura });
+  if (cierre) {
+    if (cierre.error && cierre.error !== intent.error) console.error(`${intent.id}: ${cierre.error}`);
+    intent.error = cierre.error;
   }
-  if (c.status !== 'COMPLETED') return;
-  intent.estado = 'COMPLETADO';
-  intent.orderId = c.orderId;
-  intent.finalUsd = monto(c.finalAmount ?? intent.totalUsd);
-  for (const a of L.devengado({ pre: intent.pre, finalCheckout: intent.finalUsd, cc: intent.cc })) {
-    publicar(a, intent, a.tipo === 'AJUSTE' ? `Ajuste: Reap cobro distinto a lo cotizado (orden ${c.orderId})` : `${intent.producto.nombre} · ${intent.producto.tienda} · orden ${c.orderId}`);
+  if (cierre?.estado) {
+    cierre.asientos.forEach((a) => L.validar(a)); // se publican todos o ninguno
+    for (const { concepto, ...a } of cierre.asientos) publicar(a, intent, concepto);
+    intent.estado = cierre.estado;
+    if (cierre.estado === 'COMPLETADO') Object.assign(intent, { orderId: lectura.orderId, finalUsd: L.usd(lectura.finalCents) });
   }
-  publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, 'Libera compromiso: pago completado');
+  if (cierre?.estado || JSON.stringify([intent.checkout, intent.error]) !== antes) await guardar();
+}
+
+// Intents con una autorizacion en vuelo (en memoria: un solo proceso, ver ponytail de db).
+const autorizando = new Set();
+
+// EN_CHECKOUT sin checkoutId y sin autorizacion en vuelo: el proceso cayo entre reclamar el intent y
+// guardar la respuesta de Reap. Vuelve a APROBADO para poder reintentar; el reintento manda la misma
+// Idempotency-Key, asi que si Reap alcanzo a crear el checkout devuelve ese y no crea otro.
+async function soltarReclamo(intent) {
+  if (autorizando.has(intent.id)) return;
+  intent.estado = 'APROBADO';
+  intent.error = 'La autorizacion anterior se interrumpio antes de abrir el pago en Reap; vuelve a autorizar.';
   await guardar();
+}
+
+// El compromiso ya reservo el tope, asi que aqui basta con que la cotizacion haya pasado el guard,
+// siga vigente y su total sea el que vio el aprobador.
+async function autorizar(intent, b) {
+  if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`, { codigo: 'TRANSICION_INVALIDA' });
+  if (b.confirmarTotal != null && !Number.isInteger(b.confirmarTotal)) throw falla(400, 'confirmarTotal va en centavos enteros.');
+  // Lo que vio el aprobador: confirmarTotal si lo manda; si no, el ultimo total que sirvio /api/estado.
+  const visto = b.confirmarTotal ?? (intent.totalUsd != null ? L.centavos(intent.totalUsd) : null);
+
+  // Reap rechaza el checkout de un quote vencido (409 QUOTE_EXPIRED) y el quote dura unos 5 min. Si le
+  // queda menos de un minuto, se recotiza aqui igual que en /api/intents/recotizar y pasa otra vez el guard.
+  const soloVencida = intent.cotizacion === 'BLOQUEADA' && intent.guard?.violaciones?.length > 0 && intent.guard.violaciones.every((v) => v.codigo === 'QUOTE_EXPIRADO');
+  if ((intent.cotizacion === 'LISTA' && porVencer(intent.expira)) || soloVencida) {
+    try {
+      evaluar(intent, await cotizar(intent, { cantidad: intent.cantidad }, `re-${Date.now()}`), 'Recotizacion al autorizar: la cotizacion vencia');
+    } catch (e) {
+      if (intent.expira && new Date(intent.expira) <= new Date()) {
+        intent.cotizacion = 'BLOQUEADA';
+        intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
+        registrarGuard(intent, intent.guard, 'Intento de pago');
+      }
+      await guardar();
+      throw falla(statusDeError(e), `La cotizacion de Reap expiro y no se pudo recotizar: ${e.message}`, { codigo: 'QUOTE_EXPIRADO' });
+    }
+    await guardar();
+  }
+  if (intent.cotizacion !== 'LISTA') {
+    registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
+    await guardar();
+    throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`, { codigo: intent.guard ? 'GUARD_BLOQUEO' : 'SIN_COTIZACION' });
+  }
+  const total = L.centavos(intent.totalUsd);
+  if (visto !== total) {
+    throw falla(409, `El total cambio: se vio USD ${L.usd(visto)} y Reap cotiza ahora USD ${L.usd(total)}. Revisa el desglose y confirma el nuevo total.`, { codigo: 'TOTAL_CAMBIO', detalle: { desglose: intent.desglose, totalAnterior: visto } });
+  }
+  if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
+  if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
+
+  intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
+  intent.error = null;
+  await guardar();
+  try {
+    const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
+    intent.checkoutId = c.id;
+    intent.checkout = { checkoutId: c.id, urlAprobacion: c.nextAction?.url || null, estadoReap: c.status, orderId: null, finalAmount: null };
+    await guardar();
+    return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
+  } catch (e) {
+    intent.estado = 'APROBADO';
+    // Se conserva el mensaje de Reap (la pantalla lo traduce) y se agrega el codigo del contrato.
+    // La llave del checkout sale del quoteId y Reap repetiria este error con ella: se da la cotizacion
+    // por vencida para que el siguiente intento recotice y mande otra llave.
+    if (errorGuardado(e)) intent.expira = new Date().toISOString();
+    if (e.status >= 400 && e.status < 500) e.extra = { codigo: e.codigo === 'QUOTE_EXPIRED' ? 'QUOTE_EXPIRADO' : 'REAP_RECHAZO' };
+    await guardar();
+    throw e;
+  }
+}
+
+// Registro de la tarjeta (enrollment). La Idempotency-Key (claveEnrollment en src/reap.js) se repite
+// mientras el enrollment anterior siga vivo, asi que pedirlo otra vez devuelve el mismo y su pagina
+// hosted. El sufijo, guardado en data/jpay.json, solo avanza cuando hace falta uno nuevo: el anterior
+// quedo EXPIRED, FAILED o REVOKED, o Reap respondio un error que con esa llave repetiria 24 h.
+let registrandoTarjeta = null;
+async function registrarTarjeta() {
+  if (db.enrollmentId) {
+    const previo = await reapApi.enrollment(db.enrollmentId).catch(() => null);
+    if (previo?.status === 'ACTIVE') return { url: null, status: 'ACTIVE' };
+    if (['EXPIRED', 'FAILED', 'REVOKED'].includes(previo?.status)) {
+      db.enrollmentSufijo = (db.enrollmentSufijo || 1) + 1;
+      db.enrollmentId = null;
+    }
+  }
+  try {
+    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/finanzas.html`, sufijo: db.enrollmentSufijo || 1 });
+    db.enrollmentId = e.id;
+    return { url: e.nextAction?.url || null, status: e.status };
+  } catch (e) {
+    if (errorGuardado(e)) db.enrollmentSufijo = (db.enrollmentSufijo || 1) + 1;
+    throw e;
+  } finally {
+    await guardar();
+  }
 }
 
 const rutas = {
   'GET /api/estado': async () => {
     for (const i of Object.values(db.intents)) await conciliar(i).catch((e) => console.error(e.message));
     let tarjeta = null;
-    if (db.enrollmentId) tarjeta = (await reapApi.enrollment(db.enrollmentId).catch(() => ({ status: 'SIN_CONEXION' }))).status;
+    const enr = db.enrollmentId;
+    if (enr) tarjeta = (await cadaTresSegundos(`enr:${enr}`, () => reapApi.enrollment(enr)).catch(() => ({ status: 'SIN_CONEXION' }))).status;
     const completados = Object.values(db.intents).filter((i) => i.estado === 'COMPLETADO');
     return {
       modo: modoReap,
+      modoCheckout, // hosted: el humano aprueba en Reap; simulado: X-Simulate-Checkout o sin llave
       tarjeta,
       catalogo: { cuentas: CUENTAS, categorias: CATEGORIAS, centros: CENTROS },
       intents: Object.values(db.intents).sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 15),
@@ -160,12 +275,8 @@ const rutas = {
     };
   },
 
-  'POST /api/tarjeta': async () => {
-    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/finanzas.html` });
-    db.enrollmentId = e.id;
-    await guardar();
-    return { url: e.nextAction?.url || null, status: e.status };
-  },
+  // Un doble clic recibe la misma respuesta: en este proceso comparte la promesa y en Reap la llave.
+  'POST /api/tarjeta': () => (registrandoTarjeta ??= registrarTarjeta().finally(() => { registrandoTarjeta = null; })),
 
   // 1. Intent del empleado: se aprueba contra presupuesto y nace el compromiso. 2. El agente cotiza.
   'POST /api/intents': async (b) => {
@@ -228,38 +339,17 @@ const rutas = {
     return intent;
   },
 
-  // 3. Finanzas aprueba. El compromiso ya reservo el tope, asi que aqui basta con que la
-  // cotizacion haya pasado el guard y siga vigente.
+  // 3. Finanzas aprueba. Un doble clic no autoriza dos veces: mientras una autorizacion habla con
+  // Reap, la otra se rechaza.
   'POST /api/intents/aprobar': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
-    if (intent.cotizacion !== 'LISTA') {
-      registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
-      await guardar();
-      throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`);
-    }
-    if (intent.expira && new Date(intent.expira) <= new Date()) {
-      intent.cotizacion = 'BLOQUEADA';
-      intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
-      registrarGuard(intent, intent.guard, 'Intento de pago');
-      await guardar();
-      throw falla(409, 'La cotizacion de Reap expiro; cotiza de nuevo.');
-    }
-    if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
-    if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
-
-    intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
-    await guardar();
+    if (autorizando.has(intent.id)) throw falla(409, 'Ese pago ya se esta autorizando.');
+    autorizando.add(intent.id);
     try {
-      const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
-      intent.checkoutId = c.id;
-      await guardar();
-      return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
-    } catch (e) {
-      intent.estado = 'APROBADO';
-      await guardar();
-      throw e;
+      return await autorizar(intent, b);
+    } finally {
+      autorizando.delete(intent.id);
     }
   },
 
@@ -306,9 +396,16 @@ async function retorno(url) {
   return `/finanzas.html?intent=${intent.id}`;
 }
 
-function falla(status, mensaje) {
+// El status del error pasa tal cual (4xx, 501 de Claude sin llave, 503), salvo 502 y 504: detras del
+// tunel de Cloudflare esas respuestas se cambian por su pagina HTML y la pantalla pierde el mensaje
+// JSON (500 y 503 pasan intactas). Esos dos, y los errores sin status, salen como 500.
+const statusDeError = (e) => (e.status >= 400 && e.status < 600 && e.status !== 502 && e.status !== 504 ? e.status : 500);
+
+// extra ({ codigo, detalle } del contrato) se suma a la respuesta; `error` sigue siendo texto.
+function falla(status, mensaje, extra) {
   const e = new Error(mensaje);
   e.status = status;
+  e.extra = extra;
   return e;
 }
 
@@ -356,8 +453,10 @@ createServer(async (req, res) => {
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
   } catch (e) {
     if (!e.status || e.status >= 500) console.error(e.message);
-    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
+    return responder(res, statusDeError(e), { error: e.message, ...e.extra });
   }
 }).listen(PORT, '127.0.0.1', () => {
-  console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap})`);
+  console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap}, checkout ${modoCheckout})`);
+  // Reap rechaza returnUrl que no sea HTTPS publico; se avisa aqui y no al primer pago.
+  if (modoReap === 'real' && !PUBLIC_URL.startsWith('https://')) console.warn('PUBLIC_URL no es HTTPS: Reap rechazara el returnUrl de la tarjeta y del checkout. Usa la URL del tunel.');
 });
