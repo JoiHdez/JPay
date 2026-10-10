@@ -121,6 +121,7 @@ function tarjeta(i) {
   const bloq = i.cotizacion === 'BLOQUEADA' && pendiente;
   // El error y las violaciones del guard van abajo, junto a los botones.
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra({ ...i, error: null, guard: null }));
+  if (i.estado === 'FALLIDO') caja.querySelector('.chip').textContent = 'No aprobado en Reap · no se cobró';
   if (!pendiente) {
     const r = seguidas.has(i.id) ? resultadoAutorizar(null, i) : null;
     if (r) caja.append(avisoPago(i, r.aviso));
