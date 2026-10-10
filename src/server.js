@@ -9,7 +9,7 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { reapApi, modo as modoReap, modoCheckout } from './reap.js';
+import { reapApi, modo as modoReap, modoCheckout, errorGuardado } from './reap.js';
 import { CATEGORIAS, CENTROS, CUENTAS } from './catalogo.js';
 import * as L from './ledger.js';
 import { revisar } from './guard.js';
@@ -214,7 +214,9 @@ async function autorizar(intent, b) {
   } catch (e) {
     intent.estado = 'APROBADO';
     // Se conserva el mensaje de Reap (la pantalla lo traduce) y se agrega el codigo del contrato.
-    if (e.codigo === 'QUOTE_EXPIRED') intent.expira = new Date().toISOString(); // el siguiente intento recotiza
+    // La llave del checkout sale del quoteId y Reap repetiria este error con ella: se da la cotizacion
+    // por vencida para que el siguiente intento recotice y mande otra llave.
+    if (errorGuardado(e)) intent.expira = new Date().toISOString();
     if (e.status >= 400 && e.status < 500) e.extra = { codigo: e.codigo === 'QUOTE_EXPIRED' ? 'QUOTE_EXPIRADO' : 'REAP_RECHAZO' };
     await guardar();
     throw e;
@@ -240,8 +242,7 @@ async function registrarTarjeta() {
     db.enrollmentId = e.id;
     return { url: e.nextAction?.url || null, status: e.status };
   } catch (e) {
-    // Reap no guarda 401, 422 ni 429, y 409 es la misma llave aun en vuelo; sin status no hubo respuesta.
-    if (e.status && ![401, 409, 422, 429].includes(e.status)) db.enrollmentSufijo = (db.enrollmentSufijo || 1) + 1;
+    if (errorGuardado(e)) db.enrollmentSufijo = (db.enrollmentSufijo || 1) + 1;
     throw e;
   } finally {
     await guardar();

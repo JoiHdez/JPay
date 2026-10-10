@@ -43,6 +43,13 @@ async function conReintento(url, opciones, intentos = 4) {
   }
 }
 
+/**
+ * true si Reap guardo este error con la Idempotency-Key y lo repetiria 24 h: reintentar exige otra
+ * llave. Guarda todo salvo 401, 422 y 429; 409 IDEMPOTENCY_REQUEST_IN_PROGRESS es la misma llave aun
+ * en vuelo. Sin status no hubo respuesta y la misma llave es lo seguro (api-reference/idempotency).
+ */
+export const errorGuardado = (e) => Boolean(e?.status) && ![401, 422, 429].includes(e.status) && e.codigo !== 'IDEMPOTENCY_REQUEST_IN_PROGRESS';
+
 async function reap(ruta, { metodo = 'GET', cuerpo, idempotencia, extra = {} } = {}) {
   const r = await conReintento(`${BASE}${ruta}`, {
     method: metodo,
