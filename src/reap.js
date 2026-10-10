@@ -53,6 +53,10 @@ async function reap(ruta, { metodo = 'GET', cuerpo, idempotencia, extra = {} } =
   return datos;
 }
 
+// Para la consola: deja ver que campos de la direccion van y cuales faltan, sin el telefono ni la calle.
+const tapar = (v, visibles = 0) => (v ? `***${visibles ? String(v).slice(-visibles) : ''}` : v);
+const enmascarar = (envio) => envio && { ...envio, phone: tapar(envio.phone, 2), addressLine1: tapar(envio.addressLine1), addressLine2: tapar(envio.addressLine2), postalCode: tapar(envio.postalCode) };
+
 const real = {
   crearEnrollment: ({ clienteId, email, returnUrl }) =>
     reap('/agentic/enrollments', {
@@ -75,12 +79,11 @@ const real = {
         pagination: { limit: 5 },
       },
     }),
-  cotizar: ({ variantId, cantidad, email, envio, clave }) =>
-    reap('/agentic/quotes', {
-      metodo: 'POST',
-      idempotencia: clave,
-      cuerpo: { items: [{ variantId, quantity: cantidad }], email, shippingAddress: envio },
-    }),
+  cotizar: ({ variantId, cantidad, email, envio, clave }) => {
+    const cuerpo = { items: [{ variantId, quantity: cantidad }], email, shippingAddress: envio };
+    console.log(`Reap POST /agentic/quotes ${JSON.stringify({ ...cuerpo, shippingAddress: enmascarar(envio) })}`);
+    return reap('/agentic/quotes', { metodo: 'POST', idempotencia: clave, cuerpo });
+  },
   elegirEnvio: (quoteId, shippingOptionId) =>
     reap(`/agentic/quotes/${encodeURIComponent(quoteId)}/shipping-option`, {
       metodo: 'POST',
