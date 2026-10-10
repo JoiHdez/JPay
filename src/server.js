@@ -186,7 +186,7 @@ async function autorizar(intent, b) {
         registrarGuard(intent, intent.guard, 'Intento de pago');
       }
       await guardar();
-      throw falla(e.status && e.status < 500 ? e.status : 502, `La cotizacion de Reap expiro y no se pudo recotizar: ${e.message}`, { codigo: 'QUOTE_EXPIRADO' });
+      throw falla(statusDeError(e), `La cotizacion de Reap expiro y no se pudo recotizar: ${e.message}`, { codigo: 'QUOTE_EXPIRADO' });
     }
     await guardar();
   }
@@ -396,6 +396,11 @@ async function retorno(url) {
   return `/finanzas.html?intent=${intent.id}`;
 }
 
+// El status del error pasa tal cual (4xx, 501 de Claude sin llave, 503), salvo 502 y 504: detras del
+// tunel de Cloudflare esas respuestas se cambian por su pagina HTML y la pantalla pierde el mensaje
+// JSON (500 y 503 pasan intactas). Esos dos, y los errores sin status, salen como 500.
+const statusDeError = (e) => (e.status >= 400 && e.status < 600 && e.status !== 502 && e.status !== 504 ? e.status : 500);
+
 // extra ({ codigo, detalle } del contrato) se suma a la respuesta; `error` sigue siendo texto.
 function falla(status, mensaje, extra) {
   const e = new Error(mensaje);
@@ -448,7 +453,7 @@ createServer(async (req, res) => {
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
   } catch (e) {
     if (!e.status || e.status >= 500) console.error(e.message);
-    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message, ...e.extra });
+    return responder(res, statusDeError(e), { error: e.message, ...e.extra });
   }
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap}, checkout ${modoCheckout})`);
