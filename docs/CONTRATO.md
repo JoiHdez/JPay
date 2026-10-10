@@ -6,7 +6,7 @@ J-Pay separa funciones como lo haría un control interno: **quien pide no autori
 
 | Rol | Pantalla | Rama | Servidor (rutas y módulos) |
 |---|---|---|---|
-| **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `src/agente.js` |
+| **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `src/agente.js`, `src/politica.js` |
 | **Finanzas** (autoriza el pago) | `public/finanzas.html` | `jordy/autorizador` | `POST /api/intents/aprobar`, `POST /api/tarjeta`, `GET /retorno`, `src/guard.js` |
 | **Contador** (registra y cierra) | `public/contador.html` | `contador` | `POST /api/facturas`, `POST /api/cierre` |
 
@@ -24,6 +24,8 @@ El solicitante lo crea con `POST /api/intents`:
 - `cc`: `MKT`, `IT` u `OPS` (`src/catalogo.js`).
 - `categoria`: `oficina`, `software`, `marketing` o `computo`. Define la cuenta contable.
 - Si el tope no cabe en el presupuesto del centro de costo, responde `409` y no nace el intent.
+- Si la búsqueda cae en viajes o en una categoría restringida (apuestas, adultos, armas), responde `422` y no nace el intent (`src/politica.js`).
+- `expira` es el vencimiento de la cotización de Reap (unos 5 minutos): finanzas tiene que autorizar antes; si no, el solicitante recotiza.
 
 Todos lo leen en `GET /api/estado` → `intents[]`. Campos que usan las otras pantallas:
 

@@ -14,6 +14,7 @@ import { CATEGORIAS, CENTROS, CUENTAS } from './catalogo.js';
 import * as L from './ledger.js';
 import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
+import { restriccion } from './politica.js';
 
 const PORT = Number(process.env.PORT || 3010);
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
@@ -150,6 +151,8 @@ const rutas = {
     if (!CENTROS[cc]) throw falla(400, 'Centro de costo invalido.');
     if (!CATEGORIAS[categoria]) throw falla(400, 'Categoria invalida.');
     if (busqueda.length < 2 || busqueda.length > 80) throw falla(400, 'Describe que se compra (2 a 80 letras).');
+    const prohibido = restriccion(busqueda);
+    if (prohibido) throw falla(422, `${prohibido.mensaje} No se crea el pedido.`);
     if (!Number.isInteger(cantidad) || !Number.isInteger(maxCantidad) || cantidad < 1 || cantidad > maxCantidad || maxCantidad > 20) throw falla(400, 'Cantidad invalida.');
     if (!(topeUsd > 0 && topeUsd <= 1000)) throw falla(400, 'El tope va de 0.01 a 1000 USD.');
     if (L.centavos(topeUsd) > disponible(cc)) throw falla(409, `${CENTROS[cc].nombre} no tiene presupuesto para un tope de USD ${topeUsd}.`);

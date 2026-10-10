@@ -97,7 +97,12 @@ function tarjeta(i) {
   const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra(i));
   if (i.estado === 'APROBADO') {
-    if (i.cotizacion === 'LISTA') caja.append(el('div', { className: 'muted', style: 'margin-top:6px', textContent: 'Esperando la autorización de finanzas.' }));
+    if (i.cotizacion === 'LISTA') {
+      const vence = i.expira ? el('span', { className: 'chip warn', title: 'Reap vence la cotización; finanzas debe autorizar antes.' }) : null;
+      vence?.setAttribute('data-expira', i.expira);
+      caja.append(el('div', { className: 'fila', style: 'margin-top:6px' },
+        el('span', { className: 'muted', textContent: 'Esperando la autorización de finanzas.' }), vence));
+    }
     const recotizar = el('button', { className: 'sec', textContent: 'Recotizar' });
     recotizar.onclick = () => accion(recotizar, async () => { await api('/api/intents/recotizar', { id: i.id }); await cargar(); }, $('error'));
     const doc = el('button', { className: 'sec', textContent: 'Compartir cotización de proveedor' });
@@ -124,8 +129,23 @@ $('form').onsubmit = (e) => {
   }, $('error'));
 };
 
-cargar().catch((e) => { $('error').textContent = e.message; });
-setInterval(() => cargar().catch(() => {}), 6000);
+// Cuenta regresiva de la cotizacion: Reap la vence en unos minutos y finanzas tiene que autorizar antes.
+function pintarVencimientos() {
+  for (const chip of document.querySelectorAll('[data-expira]')) {
+    const s = Math.floor((new Date(chip.dataset.expira) - Date.now()) / 1000);
+    if (s <= 0) {
+      chip.className = 'chip bad';
+      chip.textContent = 'Cotización vencida: recotiza';
+    } else {
+      chip.className = `chip ${s <= 60 ? 'bad' : 'warn'}`;
+      chip.textContent = `Cotización vence en ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }
+  }
+}
+setInterval(pintarVencimientos, 1000);
+
+cargar().then(pintarVencimientos).catch((e) => { $('error').textContent = e.message; });
+setInterval(() => cargar().then(pintarVencimientos).catch(() => {}), 6000);
 </script>
 </body>
 </html>

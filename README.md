@@ -222,7 +222,7 @@ Probado contra el sandbox: búsquedas en inglés y en español devuelven Brookli
 - [x] Los pagos agénticos son el centro: sin pago agéntico no hay asiento.
 - [x] Todo corre en sandbox; checkout simulado, sin dinero real.
 - [x] Solo comercios de la lista soportada (los que devuelve la búsqueda de Reap).
-- [x] Sin viajes ni categorías restringidas.
+- [x] Sin viajes ni categorías restringidas: `src/politica.js` rechaza el pedido antes de que nazca el intent.
 - [x] Sin scraping del checkout ni datos crudos de tarjeta al agente.
 - [x] No es un chatbot genérico de compras.
 - [x] Track: el problema que más vale la pena.
