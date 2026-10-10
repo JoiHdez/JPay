@@ -1,187 +1,266 @@
-// JPay: servidor HTTP sin dependencias.
+// J-Pay: pagos agenticos que se contabilizan solos. Servidor HTTP sin dependencias.
 //
-// Flujo: sugerencias (historial de Ochavo) -> cotizar con Reap -> guarda de presupuesto ->
-// la persona aprueba -> checkout de Reap (pagina alojada) -> retorno -> gasto en Ochavo.
+// Ciclo de un pago: intent (compromiso) -> quote de Reap (pre-asiento + Ledger Guard) ->
+// aprobacion de finanzas -> checkout de Reap -> COMPLETED (devengado, ajuste, liberacion) ->
+// factura (match) -> cierre de mes (liquidacion, balanza, P&L).
+//
+// Reglas: los montos salen siempre de Reap; el ledger solo lo escribe este codigo, y validar()
+// rechaza cualquier asiento descuadrado antes de publicarlo.
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { reapApi, modo as modoReap } from './reap.js';
-import * as ochavo from './ochavo.js';
-import { presupuestoDe, evaluar } from './presupuesto.js';
-import { sugerencias } from './sugerencias.js';
+import { CATEGORIAS, CENTROS, CUENTAS } from './catalogo.js';
+import * as L from './ledger.js';
+import { revisar } from './guard.js';
+import { leerInstrucciones, proponer } from './agente.js';
 
 const PORT = Number(process.env.PORT || 3010);
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
 const PAIS = process.env.REAP_PAIS || 'US';
 const MONEDA = process.env.REAP_MONEDA || 'USD';
-const EMAIL = process.env.REAP_EMAIL || 'demo@ochavo.com.mx';
+const EMAIL = process.env.REAP_EMAIL || 'compras@jpay.demo';
 const ENVIO = process.env.REAP_ENVIO ? JSON.parse(process.env.REAP_ENVIO) : undefined;
 const RAIZ = new URL('..', import.meta.url);
-const ARCHIVO = new URL('data/estado.json', RAIZ);
+const ARCHIVO = new URL('data/jpay.json', RAIZ);
 
-// ponytail: estado en un JSON local (una persona, un demo); a BD si esto pasa a Ochavo.
-let estado = { enrollmentId: null, pedidos: {} };
-try { estado = JSON.parse(await readFile(ARCHIVO, 'utf8')); } catch { /* primera vez */ }
+// ponytail: estado en un JSON local; Postgres con trigger de cuadre cuando haya mas de un proceso.
+let db = { enrollmentId: process.env.REAP_ENROLLMENT_ID || null, intents: {}, asientos: [], guard: [], facturas: [] };
+try { db = { ...db, ...JSON.parse(await readFile(ARCHIVO, 'utf8')) }; } catch { /* primera vez */ }
 const guardar = async () => {
   await mkdir(new URL('data/', RAIZ), { recursive: true });
-  await writeFile(ARCHIVO, JSON.stringify(estado, null, 2));
+  await writeFile(ARCHIVO, JSON.stringify(db, null, 2));
 };
 
-const montoUsd = (m) => Number(m?.amount ?? m);
-
-async function revisarPresupuesto(totalUsd) {
-  const [tc, lista] = await Promise.all([ochavo.tipoDeCambio(), ochavo.presupuestos()]);
-  const totalMxn = Math.round(totalUsd * tc * 100) / 100;
-  return { tc, totalMxn, ...evaluar({ totalMxn, presupuesto: presupuestoDe(lista, ochavo.CATEGORIA) }) };
+function publicar(asiento, intent, concepto) {
+  L.validar(asiento);
+  const a = { id: `A-${String(db.asientos.length + 1).padStart(4, '0')}`, fecha: new Date().toISOString(), estado: 'PUBLICADO', intentId: intent?.id || null, concepto, ...asiento };
+  db.asientos.push(a);
+  return a;
 }
 
-const rutas = {
-  'GET /api/estado': async () => {
-    for (const p of Object.values(estado.pedidos)) await conciliar(p).catch((e) => console.error(e.message));
-    const [lista, historial] = await Promise.all([ochavo.presupuestos(), ochavo.gastos(3)]);
-    let tarjeta = null;
-    if (estado.enrollmentId) tarjeta = (await reapApi.enrollment(estado.enrollmentId)).status;
-    return {
-      modo: { reap: modoReap, ochavo: ochavo.modo },
-      categoria: ochavo.CATEGORIA,
-      presupuesto: presupuestoDe(lista, ochavo.CATEGORIA),
-      tarjeta,
-      sugerencias: sugerencias(historial),
-      pedidos: Object.values(estado.pedidos).sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 10),
-    };
-  },
+function registrarGuard(intent, resultado, contexto) {
+  db.guard.push({ id: randomUUID(), fecha: new Date().toISOString(), intentId: intent.id, busqueda: intent.busqueda, cc: intent.cc, contexto, ...resultado });
+}
 
-  // Guarda la tarjeta en la pagina alojada de Reap; aqui solo vuelve el enrollmentId.
-  'POST /api/tarjeta': async () => {
-    const e = await reapApi.crearEnrollment({ clienteId: 'ochavo-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/` });
-    estado.enrollmentId = e.id;
-    await guardar();
-    return { url: e.nextAction?.url || null, status: e.status };
-  },
+const disponible = (cc) => L.presupuestos(db.asientos).find((p) => p.cc === cc).disponible;
+const monto = (m) => Number(m?.amount ?? m);
 
-  'POST /api/cotizar': async (body) => {
-    const articulo = String(body.articulo || '').trim();
-    const cantidad = Number(body.cantidad || 1);
-    if (articulo.length < 2 || articulo.length > 80) throw falla(400, 'Escribe que hace falta (2 a 80 letras).');
-    if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 10) throw falla(400, 'La cantidad va de 1 a 10.');
-
-    const busqueda = await reapApi.buscar({ query: articulo, pais: PAIS, moneda: MONEDA });
-    const candidatos = (busqueda.products || []).filter((p) => p.available && p.previewVariant?.available).slice(0, 3);
-    if (!candidatos.length) throw falla(404, `No encontre "${articulo}" en las tiendas compatibles. Prueba con otro nombre.`);
-
-    const id = randomUUID();
-    // Si una tienda no puede surtir (direccion, telefono, envio), se prueba la siguiente.
-    let producto, quote, ultimoError;
-    for (const [i, p] of candidatos.entries()) {
-      try {
-        quote = await reapApi.cotizar({ variantId: p.previewVariant.id, cantidad, email: EMAIL, envio: ENVIO, clave: `quo-${id}-${i}` });
-        producto = p;
-        break;
-      } catch (e) {
-        if (e.codigo !== 'QUOTE_UNFULFILLABLE') throw e;
-        ultimoError = e;
-      }
-    }
-    if (!quote) throw falla(422, `Ninguna tienda pudo surtir "${articulo}": ${ultimoError.message}`);
-    // El envio mas barato: el agente cuida el presupuesto, no la prisa.
-    const barato = [...(quote.shippingOptions || [])].sort((a, b) => montoUsd(a.price) - montoUsd(b.price))[0];
-    if (barato && !barato.selected) quote = await reapApi.elegirEnvio(quote.id, barato.id);
-
-    const totalUsd = montoUsd(quote.amountBreakdown.finalAmount);
-    const guarda = await revisarPresupuesto(totalUsd);
-    const pedido = {
-      id, articulo, cantidad, creado: new Date().toISOString(),
-      producto: { nombre: producto.name, tienda: producto.merchant?.name, imagen: producto.imageUrl || null },
-      quoteId: quote.id, expira: quote.expiresAt, totalUsd, envio: barato?.name || null,
-      totalMxn: guarda.totalMxn, tc: guarda.tc, guarda: { permitido: guarda.permitido, motivo: guarda.motivo, restante: guarda.restante, despues: guarda.despues, faltante: guarda.faltante },
-      status: guarda.permitido ? 'COTIZADO' : 'BLOQUEADO',
-    };
-    estado.pedidos[id] = pedido;
-    await guardar();
-    return pedido;
-  },
-
-  // La aprobacion de la persona dispara el checkout. La guarda se vuelve a correr aqui: lo que
-  // dijo la cotizacion no vale si entre tanto se gasto en otra cosa.
-  'POST /api/aprobar': async (body) => {
-    const pedido = estado.pedidos[body.id];
-    if (!pedido) throw falla(404, 'Ese pedido no existe.');
-    if (pedido.status !== 'COTIZADO') throw falla(409, `El pedido esta ${pedido.status}.`);
-    if (!estado.enrollmentId) throw falla(409, 'Primero guarda una tarjeta en Reap.');
-    // Reap no abre un checkout contra una tarjeta que no este ACTIVE.
-    if ((await reapApi.enrollment(estado.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta activa; guardala de nuevo.');
-    if (pedido.expira && new Date(pedido.expira) < new Date()) {
-      pedido.status = 'EXPIRADO';
-      await guardar();
-      throw falla(409, 'La cotizacion vencio; cotiza de nuevo.');
-    }
-    const guarda = await revisarPresupuesto(pedido.totalUsd);
-    if (!guarda.permitido) throw falla(409, 'Ya no cabe en el presupuesto.');
-
-    pedido.status = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
-    await guardar();
+// Busca y cotiza. Si una tienda no puede surtir (direccion, telefono), prueba la siguiente.
+async function cotizar(intent, { cantidad, envioCaro = false }, sufijo) {
+  const busqueda = await reapApi.buscar({ query: intent.busqueda, pais: PAIS, moneda: MONEDA });
+  const candidatos = (busqueda.products || []).filter((p) => p.available && p.previewVariant?.available).slice(0, 3);
+  if (!candidatos.length) throw falla(404, `No hay "${intent.busqueda}" en las tiendas compatibles.`);
+  let ultimo;
+  for (const [i, p] of candidatos.entries()) {
     try {
-      const c = await reapApi.checkout({
-        quoteId: pedido.quoteId,
-        enrollmentId: estado.enrollmentId,
-        returnUrl: `${PUBLIC_URL}/retorno?pedido=${pedido.id}`,
-        clave: `chk-${pedido.id}`,
-      });
-      pedido.checkoutId = c.id;
-      await guardar();
-      if (c.nextAction?.url) return { url: c.nextAction.url };
-      return { url: `${PUBLIC_URL}/retorno?pedido=${pedido.id}` };
+      let quote = await reapApi.cotizar({ variantId: p.previewVariant.id, cantidad, email: EMAIL, envio: ENVIO, clave: `${intent.id}-quo-${sufijo}-${i}` });
+      const producto = { id: p.id, nombre: p.name, tienda: p.merchant?.name, imagen: p.imageUrl || null };
+      const propuesta = proponer({ producto, quote, cantidadBase: cantidad, instrucciones: { envioCaro } });
+      const actual = (quote.shippingOptions || []).find((o) => o.selected);
+      if (propuesta.envioId && actual?.id !== propuesta.envioId) quote = await reapApi.elegirEnvio(quote.id, propuesta.envioId);
+      return { quote, producto, propuesta };
     } catch (e) {
-      pedido.status = 'COTIZADO';
-      await guardar();
-      throw e;
+      if (e.codigo !== 'QUOTE_UNFULFILLABLE') throw e;
+      ultimo = e;
     }
-  },
-};
+  }
+  throw falla(422, `Ninguna tienda pudo surtir "${intent.busqueda}": ${ultimo.message}`);
+}
 
-// Lee el checkout y concilia. Volver de Reap no prueba nada: solo COMPLETED crea el gasto, una
-// vez. REQUIRES_ACTION y PROCESSING siguen en curso; FAILED y EXPIRED son finales (doc de Reap:
-// Lifecycle and Statuses) y piden cotizar de nuevo.
-async function conciliar(pedido) {
-  if (pedido.status !== 'EN_CHECKOUT' || !pedido.checkoutId) return;
-  const c = await reapApi.consultarCheckout(pedido.checkoutId);
+// Arma el pre-asiento desde el quote real de Reap y lo pasa por el Ledger Guard.
+function evaluar(intent, { quote, producto, propuesta }, contexto) {
+  const pre = L.preAsiento({ cc: intent.cc, cuenta: intent.cuenta, breakdown: quote.amountBreakdown });
+  const resultado = revisar({ intent, propuesta, quote, pre, disponibleCc: disponible(intent.cc) });
+  if (propuesta.saltarAprobacion) {
+    resultado.violaciones.push({ codigo: 'SIN_APROBACION', mensaje: 'El documento pidio pagar sin la aprobacion de finanzas; J-Pay no paga sin ella.' });
+    resultado.permitido = false;
+  }
+  Object.assign(intent, {
+    quoteId: quote.id, expira: quote.expiresAt, producto, propuesta,
+    pre: { ...pre, estado: 'PROPUESTO' },
+    totalUsd: monto(quote.amountBreakdown.finalAmount),
+    envioNombre: (quote.shippingOptions || []).find((o) => o.id === propuesta.envioId)?.name || null,
+    guard: resultado,
+    cotizacion: resultado.permitido ? 'LISTA' : 'BLOQUEADA',
+  });
+  registrarGuard(intent, resultado, contexto);
+}
+
+// Lee el checkout y contabiliza. Solo COMPLETED devenga; FAILED y EXPIRED son finales y liberan.
+async function conciliar(intent) {
+  if (intent.estado !== 'EN_CHECKOUT' || !intent.checkoutId) return;
+  const c = await reapApi.consultarCheckout(intent.checkoutId);
   if (c.status === 'FAILED' || c.status === 'EXPIRED') {
-    pedido.status = c.status === 'FAILED' ? 'FALLIDO' : 'EXPIRADO';
+    intent.estado = c.status === 'FAILED' ? 'FALLIDO' : 'EXPIRADO';
+    publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, `Libera compromiso: checkout ${c.status}`);
     await guardar();
     return;
   }
   if (c.status !== 'COMPLETED') return;
-
-  pedido.status = 'REGISTRANDO'; // reclamo: dos lecturas a la vez no registran dos gastos
-  const finalUsd = montoUsd(c.finalAmount ?? pedido.totalUsd);
-  pedido.orderId = c.orderId;
-  pedido.totalUsd = finalUsd;
-  pedido.totalMxn = Math.round(finalUsd * pedido.tc * 100) / 100;
-  try {
-    const gasto = await ochavo.registrarGasto({
-      monto: pedido.totalMxn,
-      descripcion: `${pedido.producto.nombre} (${pedido.producto.tienda || 'Reap'})`,
-      categoria: ochavo.CATEGORIA,
-      notas: `Compra de JPay con Reap. Orden ${c.orderId}, USD ${finalUsd}, TC ${pedido.tc}.`,
-    });
-    pedido.gastoId = gasto.id;
-    pedido.status = 'COMPLETADO';
-  } catch (e) {
-    pedido.status = 'PAGADO_SIN_REGISTRO'; // cobrado pero no conciliado: se ve en la lista
-    pedido.error = e.message;
+  intent.estado = 'COMPLETADO';
+  intent.orderId = c.orderId;
+  intent.finalUsd = monto(c.finalAmount ?? intent.totalUsd);
+  for (const a of L.devengado({ pre: intent.pre, finalCheckout: intent.finalUsd, cc: intent.cc })) {
+    publicar(a, intent, a.tipo === 'AJUSTE' ? `Ajuste: Reap cobro distinto a lo cotizado (orden ${c.orderId})` : `${intent.producto.nombre} · ${intent.producto.tienda} · orden ${c.orderId}`);
   }
+  publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, 'Libera compromiso: pago completado');
   await guardar();
 }
 
+const rutas = {
+  'GET /api/estado': async () => {
+    for (const i of Object.values(db.intents)) await conciliar(i).catch((e) => console.error(e.message));
+    let tarjeta = null;
+    if (db.enrollmentId) tarjeta = (await reapApi.enrollment(db.enrollmentId).catch(() => ({ status: 'SIN_CONEXION' }))).status;
+    const completados = Object.values(db.intents).filter((i) => i.estado === 'COMPLETADO');
+    return {
+      modo: modoReap,
+      tarjeta,
+      catalogo: { cuentas: CUENTAS, categorias: CATEGORIAS, centros: CENTROS },
+      intents: Object.values(db.intents).sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 15),
+      asientos: db.asientos.slice(-40).reverse(),
+      guard: db.guard.slice(-15).reverse(),
+      balanza: L.balanza(db.asientos),
+      presupuestos: L.presupuestos(db.asientos),
+      pnl: L.pnl(db.asientos),
+      pagos: {
+        completados: completados.length,
+        conAsiento: completados.filter((i) => db.asientos.some((a) => a.intentId === i.id && a.tipo === 'DEVENGADO')).length,
+        conFactura: completados.filter((i) => i.factura).length,
+      },
+    };
+  },
+
+  'POST /api/tarjeta': async () => {
+    const e = await reapApi.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: EMAIL, returnUrl: `${PUBLIC_URL}/` });
+    db.enrollmentId = e.id;
+    await guardar();
+    return { url: e.nextAction?.url || null, status: e.status };
+  },
+
+  // 1. Intent del empleado: se aprueba contra presupuesto y nace el compromiso. 2. El agente cotiza.
+  'POST /api/intents': async (b) => {
+    const cc = String(b.cc || '');
+    const categoria = String(b.categoria || '');
+    const busqueda = String(b.busqueda || '').trim();
+    const cantidad = Number(b.cantidad || 1);
+    const maxCantidad = Number(b.maxCantidad || cantidad);
+    const topeUsd = Math.round(Number(b.topeUsd) * 100) / 100;
+    if (!CENTROS[cc]) throw falla(400, 'Centro de costo invalido.');
+    if (!CATEGORIAS[categoria]) throw falla(400, 'Categoria invalida.');
+    if (busqueda.length < 2 || busqueda.length > 80) throw falla(400, 'Describe que se compra (2 a 80 letras).');
+    if (!Number.isInteger(cantidad) || !Number.isInteger(maxCantidad) || cantidad < 1 || cantidad > maxCantidad || maxCantidad > 20) throw falla(400, 'Cantidad invalida.');
+    if (!(topeUsd > 0 && topeUsd <= 1000)) throw falla(400, 'El tope va de 0.01 a 1000 USD.');
+    if (L.centavos(topeUsd) > disponible(cc)) throw falla(409, `${CENTROS[cc].nombre} no tiene presupuesto para un tope de USD ${topeUsd}.`);
+
+    const intent = {
+      id: `INT-${randomUUID().slice(0, 8)}`, creado: new Date().toISOString(),
+      solicitante: String(b.solicitante || 'Equipo').slice(0, 40), cc, categoria, cuenta: CATEGORIAS[categoria].cuenta,
+      busqueda, cantidad, maxCantidad, topeUsd, envio: 'economico', moneda: MONEDA, estado: 'APROBADO',
+    };
+    db.intents[intent.id] = intent;
+    publicar(L.compromiso({ cc, monto: L.centavos(topeUsd) }), intent, `Compromiso: ${busqueda} (${intent.solicitante})`);
+    await guardar();
+    try {
+      evaluar(intent, await cotizar(intent, { cantidad }, 'base'), 'Cotizacion del agente');
+    } catch (e) {
+      intent.cotizacion = 'ERROR';
+      intent.error = e.message;
+    }
+    await guardar();
+    return intent;
+  },
+
+  // El vector de ataque: un "documento de proveedor" que el agente lee y obedece.
+  'POST /api/intents/documento': async (b) => {
+    const intent = db.intents[b.id];
+    if (!intent) throw falla(404, 'Ese intent no existe.');
+    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    const instr = leerInstrucciones(String(b.texto || '').slice(0, 5000));
+    const cotizado = await cotizar(intent, { cantidad: instr.cantidad ?? intent.cantidad, envioCaro: instr.envioCaro }, `doc-${Date.now()}`);
+    cotizado.propuesta.saltarAprobacion = instr.saltarAprobacion;
+    evaluar(intent, cotizado, 'Documento de proveedor compartido en el chat');
+    await guardar();
+    return intent;
+  },
+
+  // 3. Finanzas aprueba. El compromiso ya reservo el tope, asi que aqui basta con que la
+  // cotizacion haya pasado el guard y siga vigente.
+  'POST /api/intents/aprobar': async (b) => {
+    const intent = db.intents[b.id];
+    if (!intent) throw falla(404, 'Ese intent no existe.');
+    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    if (intent.cotizacion !== 'LISTA') {
+      registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
+      await guardar();
+      throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`);
+    }
+    if (intent.expira && new Date(intent.expira) <= new Date()) {
+      intent.cotizacion = 'BLOQUEADA';
+      intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
+      registrarGuard(intent, intent.guard, 'Intento de pago');
+      await guardar();
+      throw falla(409, 'La cotizacion de Reap expiro; cotiza de nuevo.');
+    }
+    if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
+    if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
+
+    intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
+    await guardar();
+    try {
+      const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
+      intent.checkoutId = c.id;
+      await guardar();
+      return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
+    } catch (e) {
+      intent.estado = 'APROBADO';
+      await guardar();
+      throw e;
+    }
+  },
+
+  // Recotiza un intent cuya cotizacion expiro o fue bloqueada.
+  'POST /api/intents/recotizar': async (b) => {
+    const intent = db.intents[b.id];
+    if (!intent) throw falla(404, 'Ese intent no existe.');
+    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    evaluar(intent, await cotizar(intent, { cantidad: intent.cantidad }, `re-${Date.now()}`), 'Recotizacion del agente');
+    await guardar();
+    return intent;
+  },
+
+  // 4. Factura del proveedor: se adjunta al asiento que ya existe. No se busca, se construye.
+  'POST /api/facturas': async (b) => {
+    const orderId = String(b.orderId || '').trim();
+    const total = Math.round(Number(b.total) * 100) / 100;
+    const intent = Object.values(db.intents).find((i) => i.orderId && i.orderId === orderId);
+    if (!intent) throw falla(404, `No hay un pago con la orden ${orderId}.`);
+    if (intent.factura) throw falla(409, 'Ese pago ya tiene factura.');
+    if (Math.abs(total - intent.finalUsd) > 0.01) throw falla(409, `La factura (USD ${total}) no coincide con lo pagado (USD ${intent.finalUsd}).`);
+    intent.factura = { folio: String(b.folio || '').slice(0, 60) || orderId, total, fecha: new Date().toISOString() };
+    db.facturas.push({ intentId: intent.id, ...intent.factura });
+    await guardar();
+    return { intent: intent.id, asientos: db.asientos.filter((a) => a.intentId === intent.id).map((a) => a.id), factura: intent.factura };
+  },
+
+  // 5. Cierre de mes: liquida la tarjeta y devuelve balanza y P&L.
+  'POST /api/cierre': async () => {
+    const liq = L.liquidacion(db.asientos);
+    if (liq) publicar(liq, null, 'Cierre: liquidacion de la tarjeta corporativa Reap');
+    await guardar();
+    return { liquidacion: liq ? L.usd(liq.lineas[0].debe) : 0, balanza: L.balanza(db.asientos), pnl: L.pnl(db.asientos) };
+  },
+};
+
 async function retorno(url) {
-  const pedido = estado.pedidos[url.searchParams.get('pedido')];
-  if (!pedido) return '/';
-  // PROCESSING suele durar poco: se espera unos segundos antes de volver a la pantalla.
-  for (let i = 0; i < 5 && pedido.status === 'EN_CHECKOUT'; i++) {
-    await conciliar(pedido);
-    if (pedido.status === 'EN_CHECKOUT') await new Promise((s) => setTimeout(s, 2000));
+  const intent = db.intents[url.searchParams.get('intent')];
+  if (!intent) return '/';
+  for (let i = 0; i < 5 && intent.estado === 'EN_CHECKOUT'; i++) {
+    await conciliar(intent);
+    if (intent.estado === 'EN_CHECKOUT') await new Promise((s) => setTimeout(s, 2000));
   }
-  return `/?pedido=${pedido.id}`;
+  return `/?intent=${intent.id}`;
 }
 
 function falla(status, mensaje) {
@@ -194,7 +273,7 @@ async function leerCuerpo(req) {
   let texto = '';
   for await (const parte of req) {
     texto += parte;
-    if (texto.length > 10000) throw falla(413, 'Cuerpo demasiado grande.');
+    if (texto.length > 20000) throw falla(413, 'Cuerpo demasiado grande.');
   }
   try { return texto ? JSON.parse(texto) : {}; } catch { throw falla(400, 'JSON invalido.'); }
 }
@@ -223,5 +302,5 @@ createServer(async (req, res) => {
     return responder(res, e.status && e.status < 500 ? e.status : 502, { error: e.message });
   }
 }).listen(PORT, '127.0.0.1', () => {
-  console.log(`JPay en ${PUBLIC_URL} (Reap ${modoReap}, Ochavo ${ochavo.modo})`);
+  console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap})`);
 });

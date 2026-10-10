@@ -2,7 +2,7 @@
   "name": "jpay",
   "version": "0.1.0",
   "private": true,
-  "description": "Agente de Ochavo que repone lo que falta en casa con Reap Agentic Payments, dentro del presupuesto.",
+  "description": "J-Pay: pagos agenticos con Reap que se contabilizan solos (partida doble + Ledger Guard).",
   "type": "module",
   "engines": { "node": ">=20.6" },
   "scripts": {
