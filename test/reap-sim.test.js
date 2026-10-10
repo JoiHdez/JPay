@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { crearSimulado } from '../src/reap-sim.js';
+import { crearSimulado, atenderAprobacion } from '../src/reap-sim.js';
 import { revisar } from '../src/guard.js';
 import { preAsiento, cuadra, centavos } from '../src/ledger.js';
 import { proponer } from '../src/agente.js';
@@ -76,10 +76,82 @@ test('el estado sobrevive un reinicio: tarjeta ACTIVE, quote y checkout siguen a
 
   const despues = crearSimulado({ archivo }); // como si el servidor se reiniciara
   assert.equal((await despues.enrollment(e.id)).status, 'ACTIVE');
-  assert.equal((await despues.consultarCheckout(c.id)).status, 'COMPLETED');
+  assert.equal((await despues.consultarCheckout(c.id)).status, 'REQUIRES_ACTION');
   // La misma Idempotency-Key devuelve lo mismo, aun despues del reinicio.
   assert.equal((await despues.cotizar({ variantId: 'var_prd_sim_9', cantidad: 1, clave: 'INT-1-quo-base-0' })).id, q.id);
   assert.equal((await despues.checkout({ quoteId: q.id, enrollmentId: e.id, returnUrl: RETORNO, clave: 'INT-1-chk' })).id, c.id);
   // Un checkout que el simulador no conoce se da por expirado en vez de reventar la conciliacion.
   assert.deepEqual(await despues.consultarCheckout('chk_sim_perdido'), { id: 'chk_sim_perdido', status: 'EXPIRED' });
+});
+
+// Un checkout listo para aprobar, con reloj controlable para probar el vencimiento.
+async function checkoutNuevo() {
+  const reloj = { t: Date.parse('2026-10-10T18:00:00Z') };
+  const s = crearSimulado({ archivo: archivoNuevo(), ahora: () => reloj.t });
+  const e = await s.crearEnrollment({ clienteId: 'jpay-empresa-demo', email: 'compras@jpay.demo', returnUrl: RETORNO });
+  const q = await s.cotizar({ variantId: 'var_prd_sim_8', cantidad: 2 });
+  const c = await s.checkout({ quoteId: q.id, enrollmentId: e.id, returnUrl: RETORNO });
+  return { s, q, c, reloj };
+}
+
+test('el checkout espera aprobacion en /sim/aprobar, del mismo origen que el returnUrl', async () => {
+  const { q, c } = await checkoutNuevo();
+  assert.equal(c.status, 'REQUIRES_ACTION');
+  assert.deepEqual(c.nextAction, { type: 'REDIRECT', url: `http://localhost:3013/sim/aprobar?checkout=${c.id}` });
+  assert.deepEqual(c.finalAmount, q.amountBreakdown.finalAmount);
+  assert.equal(c.orderId, undefined);
+});
+
+test('aprobar deja el checkout COMPLETED con orderId y finalAmount; un segundo clic no cambia nada', async () => {
+  const { s, q, c } = await checkoutNuevo();
+  const ok = await s.decidir(c.id, true);
+  assert.equal(ok.status, 'COMPLETED');
+  assert.match(ok.orderId, /^SIM-\d{6}$/);
+  assert.deepEqual(ok.finalAmount, q.amountBreakdown.finalAmount);
+  assert.equal(ok.nextAction, undefined);
+  assert.deepEqual(await s.decidir(c.id, false), ok);
+  assert.deepEqual(await s.consultarCheckout(c.id), ok);
+});
+
+test('rechazar lo deja FAILED, y si nadie decide en 5 minutos tambien falla, como Reap', async () => {
+  const rechazado = await checkoutNuevo();
+  assert.equal((await rechazado.s.decidir(rechazado.c.id, false)).status, 'FAILED');
+
+  const { s, c, reloj } = await checkoutNuevo();
+  reloj.t += 4 * 60000;
+  assert.equal((await s.consultarCheckout(c.id)).status, 'REQUIRES_ACTION');
+  reloj.t += 60000;
+  assert.deepEqual([(await s.consultarCheckout(c.id)).status, (await s.consultarCheckout(c.id)).failureReason], ['FAILED', 'APPROVAL_TIMEOUT']);
+  assert.equal((await s.decidir(c.id, true)).status, 'FAILED'); // tarde: ya no se puede aprobar
+});
+
+// Peticion y respuesta minimas de node:http para probar la pagina sin abrir un puerto.
+function llamar(s, metodo, ruta, cuerpo = '') {
+  const req = { method: metodo, async *[Symbol.asyncIterator]() { if (cuerpo) yield cuerpo; } };
+  return new Promise((ok, mal) => {
+    const res = {
+      writeHead(status, headers = {}) { Object.assign(this, { status, headers }); },
+      end(body = '') { ok({ status: this.status, headers: this.headers, body: String(body) }); },
+    };
+    atenderAprobacion(req, res, new URL(ruta, 'http://localhost:3013'), s).catch(mal);
+  });
+}
+
+test('la pagina /sim/aprobar avisa que es simulada, muestra el monto y redirige al returnUrl', async () => {
+  const { s, q, c } = await checkoutNuevo();
+  const total = q.amountBreakdown.finalAmount.amount.toFixed(2);
+  const pagina = await llamar(s, 'GET', `/sim/aprobar?checkout=${c.id}`);
+  assert.equal(pagina.status, 200);
+  assert.match(pagina.body, /Simulador de Reap &mdash; sin dinero real/);
+  assert.ok(pagina.body.includes(`USD ${total}`));
+  assert.ok(pagina.body.includes('Organic Cotton Tote Bag'));
+
+  assert.equal((await llamar(s, 'POST', '/sim/aprobar', `checkout=${c.id}&accion=borrar`)).status, 400);
+  const r = await llamar(s, 'POST', '/sim/aprobar', `checkout=${c.id}&accion=aprobar`);
+  assert.deepEqual([r.status, r.headers.Location], [303, RETORNO]);
+  assert.equal((await s.consultarCheckout(c.id)).status, 'COMPLETED');
+  assert.match((await llamar(s, 'GET', `/sim/aprobar?checkout=${c.id}`)).body, /Pago aprobado\. Orden SIM-/);
+
+  assert.equal((await llamar(s, 'GET', '/sim/aprobar?checkout=chk_sim_nada')).status, 404);
+  assert.equal((await llamar(s, 'POST', '/sim/aprobar', 'checkout=chk_sim_nada&accion=aprobar')).status, 404);
 });

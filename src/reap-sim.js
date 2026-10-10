@@ -2,7 +2,8 @@
 //
 // Misma interfaz y mismas formas de respuesta que el real (src/reap.js elige uno u otro). El
 // estado vive en data/reap-sim.json para que un reinicio no deje la tarjeta EXPIRED ni pierda
-// checkouts.
+// checkouts a medio aprobar. El checkout pasa por REQUIRES_ACTION y se aprueba en /sim/aprobar,
+// una pagina local que hace las veces de la pagina alojada de Reap. Sin tarjeta y sin dinero.
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
@@ -28,6 +29,8 @@ const ENVIOS = [
   { id: 'exp', name: 'Express', centavos: 1299 },
 ];
 const QUOTE_MS = 15 * 60000;
+// Reap da por fallido el checkout si nadie lo aprueba en unos minutos; aqui, 5.
+const APROBACION_MS = 5 * 60000;
 
 const usd = (centavos) => ({ amount: centavos / 100, currency: 'USD' });
 const centavos = (m) => Math.round(Number(m) * 100);
@@ -85,6 +88,13 @@ export function crearSimulado({ archivo, ahora = () => Date.now() }) {
     cola = escritura;
     return escritura;
   };
+
+  async function vencer(c) {
+    if (c.status !== 'REQUIRES_ACTION' || new Date(c.expiresAt).getTime() > ahora()) return;
+    Object.assign(c, { status: 'FAILED', failureReason: 'APPROVAL_TIMEOUT' });
+    delete c.nextAction;
+    await guardar();
+  }
 
   return {
     async crearEnrollment({ clienteId, email, returnUrl }) {
@@ -157,24 +167,155 @@ export function crearSimulado({ archivo, ahora = () => Date.now() }) {
       const id = `chk_sim_${randomUUID().slice(0, 8)}`;
       datos.checkouts[id] = {
         id,
-        status: 'COMPLETED',
+        status: 'REQUIRES_ACTION',
         quoteId,
         enrollmentId,
-        orderId: `SIM-${String(ahora()).slice(-6)}`,
         finalAmount: q.amountBreakdown.finalAmount,
+        presentation: { type: 'REDIRECT', returnUrl },
+        // La "pagina alojada" es local, en el mismo origen que el returnUrl (este servidor).
+        nextAction: { type: 'REDIRECT', url: `${new URL(returnUrl).origin}/sim/aprobar?checkout=${id}` },
+        expiresAt: new Date(ahora() + APROBACION_MS).toISOString(),
       };
       if (clave) datos.claves[clave] = id;
       await guardar();
-      return { ...copia(datos.checkouts[id]), status: 'REQUIRES_ACTION', nextAction: { type: 'REDIRECT', url: returnUrl } };
+      return copia(datos.checkouts[id]);
     },
 
     // Un checkout que el simulador no conoce (de antes de persistir, o si se borro el JSON) se da
     // por expirado, como el enrollment: asi el intent libera su compromiso en vez de atorarse.
     async consultarCheckout(id) {
       const c = leer().checkouts[id];
-      return c ? copia(c) : { id, status: 'EXPIRED' };
+      if (!c) return { id, status: 'EXPIRED' };
+      await vencer(c);
+      return copia(c);
+    },
+
+    // Solo del simulador: lo que veria y haria el usuario en la pagina alojada de Reap.
+    async detalle(id) {
+      const c = leer().checkouts[id];
+      if (!c) return null;
+      await vencer(c);
+      return { checkout: copia(c), quote: copia(m.quotes[c.quoteId] || null), restanteMs: new Date(c.expiresAt).getTime() - ahora() };
+    },
+
+    async decidir(id, aprobar) {
+      const c = leer().checkouts[id];
+      if (!c) return null;
+      await vencer(c);
+      if (c.status !== 'REQUIRES_ACTION') return copia(c); // ya decidido: un doble clic no cambia nada
+      delete c.nextAction;
+      if (aprobar) Object.assign(c, { status: 'COMPLETED', orderId: `SIM-${String(ahora()).slice(-6)}`, completedAt: new Date(ahora()).toISOString() });
+      else Object.assign(c, { status: 'FAILED', failureReason: 'DECLINED' });
+      await guardar();
+      return copia(c);
     },
   };
 }
 
 export const simulado = crearSimulado({ archivo: fileURLToPath(new URL('../data/reap-sim.json', import.meta.url)) });
+
+// ── Pagina de aprobacion (/sim/aprobar) ───────────────────────────────────────────────────────
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const dinero = (m) => (m ? `${esc(m.currency)} ${Number(m.amount).toFixed(2)}` : '');
+
+function pagina(cuerpo) {
+  return `<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador de Reap</title>
+<style>
+  body { margin: 0; padding: 24px 16px; font: 16px/1.5 system-ui, sans-serif; background: #f4f4f5; color: #18181b; }
+  main { max-width: 440px; margin: 0 auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px #0003; }
+  .aviso { margin: 0 0 16px; padding: 10px 12px; border: 1px solid #f59e0b; border-radius: 8px; background: #fef3c7; color: #92400e; font-weight: 700; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .total { margin: 8px 0 16px; font-size: 32px; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 4px 0; border-bottom: 1px solid #f4f4f5; }
+  td:last-child { text-align: right; }
+  .muted { color: #71717a; font-size: 14px; }
+  .botones { display: flex; gap: 12px; margin-top: 20px; }
+  button, .boton { flex: 1; padding: 12px; border: 0; border-radius: 8px; font-size: 16px; text-align: center; text-decoration: none; cursor: pointer; }
+  .aprobar { background: #16a34a; color: #fff; }
+  .rechazar { background: #e4e4e7; color: #18181b; }
+</style>
+</head>
+<body><main>
+<p class="aviso">Simulador de Reap &mdash; sin dinero real</p>
+${cuerpo}
+</main></body>
+</html>`;
+}
+
+function verDetalle({ checkout: c, quote: q, restanteMs }) {
+  const item = q?.items?.[0];
+  const b = q?.amountBreakdown;
+  const envio = q?.shippingOptions?.find((o) => o.selected);
+  const filas = [
+    item && ['Comercio', esc(item.merchant?.name)],
+    item && ['Producto', `${esc(item.name)} &times; ${esc(item.quantity)}`],
+    b && ['Subtotal', dinero(b.itemsSubtotal)],
+    b && [`Env&iacute;o${envio ? ` (${esc(envio.name)})` : ''}`, dinero(b.shipping)],
+    b && ['Impuesto', dinero(b.tax?.amount)],
+  ].filter(Boolean).map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  const encabezado = `<h1>Aprobar pago</h1>
+<p class="muted">Checkout ${esc(c.id)}</p>
+<div class="total">${dinero(c.finalAmount)}</div>
+<table>${filas}</table>`;
+
+  if (c.status === 'REQUIRES_ACTION') {
+    const minutos = Math.max(1, Math.ceil(restanteMs / 60000));
+    return pagina(`${encabezado}
+<p class="muted">Aqu&iacute; Reap pedir&iacute;a la tarjeta registrada. Este simulador no cobra nada: solo decide el estado del checkout. Expira en ${minutos} min si nadie decide.</p>
+<form method="post" action="/sim/aprobar" class="botones">
+  <input type="hidden" name="checkout" value="${esc(c.id)}">
+  <button class="rechazar" name="accion" value="rechazar">Rechazar</button>
+  <button class="aprobar" name="accion" value="aprobar">Aprobar</button>
+</form>`);
+  }
+  const resultado = {
+    COMPLETED: `Pago aprobado. Orden ${esc(c.orderId)}.`,
+    FAILED: c.failureReason === 'APPROVAL_TIMEOUT' ? 'Nadie aprob&oacute; a tiempo: el checkout fall&oacute;.' : 'Pago rechazado.',
+  }[c.status] || `Estado: ${esc(c.status)}.`;
+  return pagina(`${encabezado}
+<p><strong>${resultado}</strong></p>
+<div class="botones"><a class="boton aprobar" href="${esc(c.presentation?.returnUrl)}">Volver a J-Pay</a></div>`);
+}
+
+async function leerFormulario(req) {
+  let texto = '';
+  for await (const parte of req) {
+    texto += parte;
+    if (texto.length > 2000) return null;
+  }
+  return new URLSearchParams(texto);
+}
+
+const html = (res, status, cuerpo) => {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(cuerpo);
+};
+const noExiste = (res) => html(res, 404, pagina('<h1>Checkout no encontrado</h1><p>Ese checkout no existe en el simulador.</p>'));
+
+/** GET muestra el checkout; POST aprueba o rechaza y vuelve al returnUrl, como la pagina de Reap. */
+export async function atenderAprobacion(req, res, url, sim = simulado) {
+  if (req.method === 'GET') {
+    const d = await sim.detalle(url.searchParams.get('checkout'));
+    return d ? html(res, 200, verDetalle(d)) : noExiste(res);
+  }
+  if (req.method !== 'POST') {
+    res.writeHead(405, { Allow: 'GET, POST' });
+    return res.end();
+  }
+  const form = await leerFormulario(req);
+  if (!form) return html(res, 413, pagina('<h1>Formulario demasiado grande</h1>'));
+  const accion = form.get('accion');
+  if (accion !== 'aprobar' && accion !== 'rechazar') return html(res, 400, pagina('<h1>Accion invalida</h1><p>Usa Aprobar o Rechazar.</p>'));
+  const c = await sim.decidir(form.get('checkout'), accion === 'aprobar');
+  if (!c) return noExiste(res);
+  // El returnUrl sale del checkout guardado, nunca del formulario: no hay redireccion abierta.
+  res.writeHead(303, { Location: c.presentation.returnUrl });
+  return res.end();
+}
