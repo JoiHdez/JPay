@@ -1,0 +1,355 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "J-Pay: flujo general de un pago",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "camino",
+        "label": "Camino principal",
+        "focus": [
+          "pedir",
+          "revisar",
+          "aprobar",
+          "devengado",
+          "match",
+          "cierre"
+        ],
+        "note": "Del pedido en el dashboard al cierre de mes con la tarjeta liquidada."
+      },
+      {
+        "id": "guard",
+        "label": "Qué decide el Ledger Guard",
+        "focus": [
+          "quote",
+          "guard",
+          "revisar",
+          "bloqueado"
+        ],
+        "note": "El pre-asiento sale del amountBreakdown real de Reap y se compara contra el compromiso antes de cualquier checkout."
+      },
+      {
+        "id": "asientos",
+        "label": "De dónde salen los asientos",
+        "focus": [
+          "compromiso",
+          "checkout",
+          "devengado",
+          "ledger_db",
+          "cierre"
+        ],
+        "note": "Compromiso al pedir, devengado y ajuste con el finalAmount del checkout, liquidación al cerrar el mes."
+      },
+      {
+        "id": "bloqueos",
+        "label": "Dónde se detiene",
+        "focus": [
+          "pedir",
+          "sin_presupuesto",
+          "revisar",
+          "bloqueado",
+          "aprobar",
+          "fallido"
+        ],
+        "note": "Sin presupuesto no hay compromiso; si el guard bloquea no hay checkout; si Reap falla se libera el compromiso."
+      }
+    ],
+    "legend": {
+      "entries": {
+        "frontend": {
+          "label": "Interfaz (dashboard)"
+        },
+        "backend": {
+          "label": "Servidor J-Pay"
+        },
+        "database": {
+          "label": "Almacenamiento"
+        },
+        "security": {
+          "label": "Aprobación, bloqueo o aviso"
+        },
+        "external": {
+          "label": "Reap Agentic API"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "datos",
+      "label": "Reap y almacenamiento"
+    },
+    {
+      "id": "backend",
+      "label": "Servidor J-Pay (guard y ledger)"
+    },
+    {
+      "id": "usuario",
+      "label": "Empleado y finanzas (dashboard)"
+    },
+    {
+      "id": "excepciones",
+      "label": "Bloqueos y avisos",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "pedido",
+      "label": "Pedido",
+      "fromCol": 0,
+      "toCol": 0
+    },
+    {
+      "id": "cotizacion",
+      "label": "Cotización",
+      "fromCol": 1,
+      "toCol": 1,
+      "variant": "emphasis"
+    },
+    {
+      "id": "pago",
+      "label": "Pago",
+      "fromCol": 2,
+      "toCol": 3
+    },
+    {
+      "id": "contabilidad",
+      "label": "Contabilidad",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "pedir",
+    "revisar",
+    "aprobar",
+    "devengado",
+    "match",
+    "cierre"
+  ],
+  "nodes": [
+    {
+      "id": "quote",
+      "lane": "datos",
+      "col": 1,
+      "type": "external",
+      "label": "Quote de Reap",
+      "sublabel": "amountBreakdown",
+      "tag": "/agentic/quotes",
+      "width": 130
+    },
+    {
+      "id": "checkout",
+      "lane": "datos",
+      "col": 2,
+      "type": "external",
+      "label": "Checkout de Reap",
+      "sublabel": "orderId y finalAmount",
+      "tag": "/agentic/checkouts",
+      "width": 140
+    },
+    {
+      "id": "ledger_db",
+      "lane": "datos",
+      "col": 4,
+      "type": "database",
+      "label": "Ledger",
+      "sublabel": "asientos publicados",
+      "tag": "data/jpay.json",
+      "width": 130
+    },
+    {
+      "id": "compromiso",
+      "lane": "backend",
+      "col": 0,
+      "type": "backend",
+      "label": "Compromiso",
+      "sublabel": "reserva tope 8100/8000",
+      "tag": "POST /api/intents",
+      "width": 140
+    },
+    {
+      "id": "guard",
+      "lane": "backend",
+      "col": 1,
+      "type": "backend",
+      "label": "Ledger Guard",
+      "sublabel": "pre-asiento y 12 reglas",
+      "tag": "guard.js",
+      "width": 130
+    },
+    {
+      "id": "devengado",
+      "lane": "backend",
+      "col": 3,
+      "type": "backend",
+      "label": "Devengado",
+      "sublabel": "gasto e impuesto vs 2100",
+      "tag": "ajuste a 5900",
+      "width": 140
+    },
+    {
+      "id": "match",
+      "lane": "backend",
+      "col": 4,
+      "type": "backend",
+      "label": "Match de factura",
+      "sublabel": "por orden y monto",
+      "tag": "/api/facturas",
+      "width": 130
+    },
+    {
+      "id": "cierre",
+      "lane": "backend",
+      "col": 5,
+      "type": "backend",
+      "label": "Cierre de mes",
+      "sublabel": "liquidación, balanza, P&L",
+      "tag": "/api/cierre",
+      "width": 130
+    },
+    {
+      "id": "pedir",
+      "lane": "usuario",
+      "col": 0,
+      "type": "frontend",
+      "label": "Pedir compra",
+      "sublabel": "área, artículo y tope",
+      "width": 120
+    },
+    {
+      "id": "revisar",
+      "lane": "usuario",
+      "col": 1,
+      "type": "frontend",
+      "label": "Revisar propuesta",
+      "sublabel": "total, envío y guard",
+      "width": 130
+    },
+    {
+      "id": "aprobar",
+      "lane": "usuario",
+      "col": 2,
+      "type": "security",
+      "label": "Aprobar cargo",
+      "sublabel": "página hosted de Reap",
+      "tag": "finanzas",
+      "width": 130
+    },
+    {
+      "id": "sin_presupuesto",
+      "lane": "excepciones",
+      "col": 0,
+      "type": "security",
+      "label": "Sin presupuesto",
+      "sublabel": "409 por centro de costo",
+      "width": 130
+    },
+    {
+      "id": "bloqueado",
+      "lane": "excepciones",
+      "col": 1,
+      "type": "security",
+      "label": "Pago bloqueado",
+      "sublabel": "CANTIDAD, ENVIO, TOPE...",
+      "width": 130
+    },
+    {
+      "id": "fallido",
+      "lane": "excepciones",
+      "col": 2,
+      "type": "security",
+      "label": "Checkout fallido",
+      "sublabel": "libera el compromiso",
+      "width": 130
+    }
+  ],
+  "edges": [
+    {
+      "from": "pedir",
+      "to": "revisar",
+      "label": "agente cotiza"
+    },
+    {
+      "from": "revisar",
+      "to": "aprobar",
+      "label": "guard ok"
+    },
+    {
+      "from": "aprobar",
+      "to": "devengado",
+      "label": "COMPLETED"
+    },
+    {
+      "from": "devengado",
+      "to": "match",
+      "label": "llega la factura"
+    },
+    {
+      "from": "match",
+      "to": "cierre",
+      "label": "fin de mes"
+    },
+    {
+      "from": "pedir",
+      "to": "compromiso",
+      "label": "reserva tope",
+      "role": "branch"
+    },
+    {
+      "from": "quote",
+      "to": "guard",
+      "label": "pre-asiento",
+      "role": "branch"
+    },
+    {
+      "from": "guard",
+      "to": "revisar",
+      "label": "decisión",
+      "role": "branch"
+    },
+    {
+      "from": "aprobar",
+      "to": "checkout",
+      "label": "checkout",
+      "role": "branch"
+    },
+    {
+      "from": "devengado",
+      "to": "ledger_db",
+      "label": "publica asientos",
+      "role": "async"
+    },
+    {
+      "from": "ledger_db",
+      "to": "cierre",
+      "label": "balanza",
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "from": "pedir",
+      "to": "sin_presupuesto",
+      "role": "error",
+      "variant": "security",
+      "route": "drop",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "revisar",
+      "to": "bloqueado",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "from": "aprobar",
+      "to": "fallido",
+      "role": "error",
+      "variant": "security"
+    }
+  ]
+}
