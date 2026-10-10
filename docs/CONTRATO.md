@@ -7,41 +7,68 @@ J-Pay separa funciones como lo haría un control interno: **quien pide no autori
 | Rol | Pantalla | Rama | Servidor (rutas y módulos) |
 |---|---|---|---|
 | **Solicitante** (pide la compra) | `public/solicitante.html` | `joel/solicitante` | `POST /api/intents`, `POST /api/intents/recotizar`, `POST /api/intents/documento`, `src/agente.js` |
-| **Finanzas** (autoriza el pago) | `public/finanzas.html` | `jordy/autorizador` | `POST /api/intents/aprobar`, `POST /api/tarjeta`, `GET /retorno`, `src/guard.js` |
+| **Finanzas** (autoriza el pago) | `public/finanzas.html` | `jordy/autorizador` | `POST /api/intents/aprobar`, `POST /api/intents/rechazar`, `POST /api/intents/cambios`, `POST /api/tarjeta`, `GET /retorno`, `src/guard.js` |
 | **Contador** (registra y cierra) | `public/contador.html` | `contador` | `POST /api/facturas`, `POST /api/cierre` |
 
 **Compartido (solo en `main`, con aviso):** `public/comun.js`, `public/comun.css`, `public/index.html`, `src/ledger.js`, `src/catalogo.js`, `src/reap.js`, `GET /api/estado`. Todo cambio a `ledger.js` o `guard.js` va con su prueba en `test/`.
 
-## El intent: lo que pasa de un rol a otro
+## API del aprobador
 
-El solicitante lo crea con `POST /api/intents`:
+Este contrato es la fuente de verdad del flujo del aprobador.
 
-```json
-{ "solicitante": "Ana (Operaciones)", "cc": "OPS", "busqueda": "laundry detergent",
-  "categoria": "oficina", "cantidad": 1, "maxCantidad": 2, "topeUsd": 45 }
+> **Estado de implementación:** es el formato destino. Mientras no se migre (pendiente de acordar con Solicitante y con las ramas de Codex), `GET /api/estado` sigue sirviendo el formato anterior: `estado` `APROBADO → EN_CHECKOUT → COMPLETADO | FALLIDO | EXPIRADO`, `cotizacion` `LISTA | BLOQUEADA | ERROR`, montos en USD y `error` como texto. Lo nuevo se agrega sin cambiar el tipo de los campos existentes.
+
+### Estados
+
+```
+COTIZADA | SIN_COTIZACION | BLOQUEADA | CAMBIOS_SOLICITADOS | RECHAZADA | EXPIRADA | AUTORIZADA | EN_PAGO | PAGADA | FALLIDA
 ```
 
-- `cc`: `MKT`, `IT` u `OPS` (`src/catalogo.js`).
-- `categoria`: `oficina`, `software`, `marketing` o `computo`. Define la cuenta contable.
-- Si el tope no cabe en el presupuesto del centro de costo, responde `409` y no nace el intent.
+Transiciones:
 
-Todos lo leen en `GET /api/estado` → `intents[]`. Campos que usan las otras pantallas:
+```
+COTIZADA -> AUTORIZADA | RECHAZADA | CAMBIOS_SOLICITADOS | EXPIRADA
+BLOQUEADA -> COTIZADA (recotizar) | RECHAZADA
+AUTORIZADA -> EN_PAGO | FALLIDA
+EN_PAGO -> PAGADA | FALLIDA
+SIN_COTIZACION | EXPIRADA | CAMBIOS_SOLICITADOS -> COTIZADA (recotizar)
+```
 
-| Campo | Significado |
-|---|---|
-| `id` | `INT-xxxxxxxx`; también es la raíz de las llaves de idempotencia |
-| `estado` | `APROBADO` (comprometido, sin pagar) → `EN_CHECKOUT` → `COMPLETADO`; o `FALLIDO` / `EXPIRADO` |
-| `cotizacion` | `LISTA` (el guard la permite), `BLOQUEADA` (el guard la frena) o `ERROR` |
-| `guard.violaciones[]` | `{ codigo, mensaje }`, por ejemplo `CANTIDAD`, `ENVIO`, `TOPE` |
-| `producto`, `propuesta`, `totalUsd`, `envioNombre`, `expira` | lo que cotizó el agente en Reap |
-| `orderId`, `finalUsd` | al completarse el checkout |
-| `factura` | `{ folio, total, fecha }` cuando el contador la adjunta |
+Terminales: `PAGADA`, `RECHAZADA`, `FALLIDA`.
 
-## Las entregas entre roles
+Montos: centavos enteros en la API; la UI formatea.
 
-1. **Solicitante → finanzas:** un intent con `estado: APROBADO` y `cotizacion: LISTA` aparece en la bandeja de finanzas. Si está `BLOQUEADA`, finanzas lo ve en rojo y el servidor rechaza la aprobación.
-2. **Finanzas → Reap → contador:** `POST /api/intents/aprobar` devuelve la URL de la página hosted de Reap. Al volver (`/retorno`), el servidor contabiliza y redirige a `/finanzas.html`. El contador ve los asientos en `asientos[]`.
-3. **Contador:** adjunta la factura por `orderId` y total, y cierra el mes.
+### Intent en `GET /api/estado`
+
+```
+{ id, estado, descripcion, centroCosto, solicitante, justificacion,
+  producto: { nombre, variante, comercio, imagen },
+  cotizacion: { quoteId, expiraEn, moneda, desglose: { producto, envio, impuesto, descuento, total } } | null,
+  guard: { permitido, reglas: [ { codigo, ok, mensaje } ] },
+  presupuesto: { tope, disponibleAntes, disponibleDespues, pctTope },
+  preAsiento: [ { cuenta, nombre, debe, haber } ],
+  checkout: { checkoutId, urlAprobacion, estadoReap, orderId, finalAmount } | null,
+  decision: { por, en, accion, motivo } | null,     accion: AUTORIZAR | RECHAZAR | CAMBIOS
+  error: { codigo, mensaje, detalle } | null,
+  traza: [ { en, actor, evento, datos } ] }
+```
+
+Raíz de `/api/estado`: `modo: { reap: "sandbox" | "simulado", checkout: "hosted" | "simulado" }`
+
+### Rutas
+
+```
+POST /api/intents/aprobar   { id, por, confirmarTotal? }
+POST /api/intents/rechazar  { id, por, motivo }
+POST /api/intents/cambios   { id, por, comentario }
+POST /api/intents/recotizar { id }
+```
+
+### Errores
+
+4xx con `{ error: { codigo, mensaje, detalle } }`
+
+Códigos: `QUOTE_EXPIRADO`, `TOTAL_CAMBIO` (trae el nuevo desglose), `GUARD_BLOQUEO`, `SIN_COTIZACION`, `REAP_RECHAZO`, `TRANSICION_INVALIDA`
 
 ## Reglas para no chocar
 
