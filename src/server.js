@@ -311,6 +311,7 @@ const ESTATICOS = {
   '/contador.html': ['contador.html', 'text/html; charset=utf-8'],
   '/comun.js': ['comun.js', 'text/javascript; charset=utf-8'],
   '/comun.css': ['comun.css', 'text/css; charset=utf-8'],
+  '/errores.js': ['errores.js', 'text/javascript; charset=utf-8'],
 };
 
 const responder = (res, status, datos) => {
