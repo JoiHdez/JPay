@@ -16,6 +16,8 @@ import { revisar } from './guard.js';
 import { leerInstrucciones, proponer } from './agente.js';
 import { restriccion } from './politica.js';
 import { interpretar } from './pedidoNatural.js';
+import { comprometidoVivo, decidir, liberarCompromiso, sincronizarCompromiso } from './decision.js';
+import { CON_COMPROMISO, ESTADOS, RECOTIZABLES, anotar, migrar, nacer, puede, transicionar, transicionInvalida } from './estados.js';
 import { atenderAprobacion } from './reap-sim.js';
 
 // REAP_ENVIO es la shippingAddress de cada quote. Si falta o no es un objeto, Reap responde
@@ -60,11 +62,44 @@ const guardar = async () => {
   await writeFile(ARCHIVO, JSON.stringify(db, null, 2));
 };
 
+// Un asiento que ya trae id (la apertura, APERTURA-<cc>-<mes>) lo conserva: de ese id estable
+// depende que la apertura no se repita.
 function publicar(asiento, intent, concepto) {
   L.validar(asiento);
   const a = { id: `A-${String(db.asientos.length + 1).padStart(4, '0')}`, fecha: new Date().toISOString(), estado: 'PUBLICADO', intentId: intent?.id || null, concepto, ...asiento };
   db.asientos.push(a);
   return a;
+}
+
+// Presupuesto mensual en cuentas de orden (8000/8900): una apertura por centro y mes, idempotente.
+if (L.asegurarAperturasPresupuesto(db.asientos, new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Mexico_City' }).slice(0, 7), (a) => publicar(a, null, 'Apertura de presupuesto')).length) await guardar();
+
+// Checkouts en vuelo: un doble clic en autorizar no crea dos, y la expiracion no los pisa.
+const enCurso = new Set();
+
+// Toda transicion del servidor: la maquina de estados decide si aplica y el compromiso sigue al
+// estado (se reserva con una cotizacion valida, se libera al salir de ella).
+function mover(intent, a, { concepto, ...traza } = {}) {
+  transicionar(intent, a, traza);
+  sincronizarCompromiso(intent, db.asientos, publicar, concepto);
+}
+
+// Al arrancar: intents con el formato anterior pasan a la maquina de estados (ver migrar en
+// src/estados.js), y los compromisos huerfanos, vivos en un estado que no reserva presupuesto (una
+// compra que nunca cotizo, una bloqueada), se liberan con su asiento. Nunca se borra un asiento.
+{
+  let cambio = false;
+  for (const i of Object.values(db.intents)) {
+    if (migrar(i)) cambio = true;
+    if (!ESTADOS.includes(i.estado)) { console.warn(`Intent ${i.id} con estado desconocido ${i.estado}; no se toca.`); continue; }
+    if (!CON_COMPROMISO.includes(i.estado) && liberarCompromiso(i, db.asientos, publicar, `Libera compromiso huerfano: la compra esta ${i.estado}`)) {
+      anotar(i, { evento: 'COMPROMISO_LIBERADO', datos: { motivo: 'huerfano', estado: i.estado } });
+      cambio = true;
+    }
+    if (CON_COMPROMISO.includes(i.estado) && comprometidoVivo(db.asientos, i.id) <= 0) console.warn(`Intent ${i.id} ${i.estado} sin compromiso vivo.`);
+    if (vencer(i)) cambio = true;
+  }
+  if (cambio) await guardar();
 }
 
 function registrarGuard(intent, resultado, contexto) {
@@ -96,14 +131,27 @@ async function cotizar(intent, { cantidad, envioCaro = false }, sufijo) {
   throw falla(422, `Ninguna tienda pudo surtir "${intent.busqueda}": ${ultimo.message}`);
 }
 
-// Arma el pre-asiento desde el quote real de Reap y lo pasa por el Ledger Guard.
-function evaluar(intent, { quote, producto, propuesta }, contexto) {
+// Arma el pre-asiento desde el quote real de Reap y lo pasa por el Ledger Guard. Si pasa, la
+// compra queda COTIZADA y reserva su tope; si no, BLOQUEADA y sin compromiso.
+function evaluar(intent, { quote, producto, propuesta }, contexto, actor = 'agente') {
+  // Otra peticion pudo cambiar el estado mientras Reap respondia.
+  if (!RECOTIZABLES.includes(intent.estado)) throw transicionInvalida(intent.estado, 'COTIZADA');
   const pre = L.preAsiento({ cc: intent.cc, cuenta: intent.cuenta, breakdown: quote.amountBreakdown });
-  const resultado = revisar({ intent, propuesta, quote, pre, disponibleCc: disponible(intent.cc) });
+  // Lo libre si este intent no tuviera compromiso; el guard espera lo disponible ya con el tope reservado.
+  const libre = disponible(intent.cc) + comprometidoVivo(db.asientos, intent.id);
+  const tope = L.centavos(intent.topeUsd);
+  const resultado = revisar({ intent, propuesta, quote, pre, disponibleCc: libre - tope });
+  if (tope > libre && !resultado.violaciones.some((v) => v.codigo === 'PRESUPUESTO')) {
+    resultado.violaciones.push({ codigo: 'PRESUPUESTO', mensaje: `El tope (USD ${intent.topeUsd}) ya no cabe en el presupuesto disponible del centro de costo.` });
+    resultado.permitido = false;
+  }
   if (propuesta.saltarAprobacion) {
     resultado.violaciones.push({ codigo: 'SIN_APROBACION', mensaje: 'El documento pidio pagar sin la aprobacion de finanzas; J-Pay no paga sin ella.' });
     resultado.permitido = false;
   }
+  const destino = resultado.permitido ? 'COTIZADA' : 'BLOQUEADA';
+  if (!puede(intent.estado, destino)) throw transicionInvalida(intent.estado, destino);
+  delete intent.error;
   Object.assign(intent, {
     quoteId: quote.id, expira: quote.expiresAt, producto, propuesta,
     pre: { ...pre, estado: 'PROPUESTO' },
@@ -113,35 +161,50 @@ function evaluar(intent, { quote, producto, propuesta }, contexto) {
     cotizacion: resultado.permitido ? 'LISTA' : 'BLOQUEADA',
   });
   registrarGuard(intent, resultado, contexto);
+  const de = intent.estado;
+  mover(intent, destino, { actor, evento: contexto, datos: { quoteId: quote.id, totalUsd: intent.totalUsd, violaciones: resultado.violaciones.map((v) => v.codigo) } });
+  // Los cambios pedidos ya se atendieron: la compra vuelve a esperar decision (el pedido queda en la traza).
+  if (de === 'CAMBIOS_SOLICITADOS') intent.decision = null;
+}
+
+// La cotizacion de Reap vence (~5 min). Antes del checkout la compra queda EXPIRADA (se puede
+// recotizar); si ya estaba autorizada y el checkout no se creo, FALLIDA. Ambas liberan.
+function vencer(intent, ahora = new Date()) {
+  if (!['COTIZADA', 'AUTORIZADA'].includes(intent.estado) || !intent.expira || new Date(intent.expira) > ahora) return false;
+  if (enCurso.has(intent.id)) return false; // el checkout ya va en camino; lo resuelve aprobar
+  intent.cotizacion = 'BLOQUEADA';
+  intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
+  mover(intent, intent.estado === 'COTIZADA' ? 'EXPIRADA' : 'FALLIDA', { evento: 'QUOTE_EXPIRADO', datos: { quoteId: intent.quoteId, expira: intent.expira }, ahora });
+  return true;
 }
 
 // Lee el checkout y contabiliza. Solo COMPLETED devenga; FAILED y EXPIRED son finales y liberan.
 async function conciliar(intent) {
-  if (intent.estado !== 'EN_CHECKOUT' || !intent.checkoutId) return;
+  if (intent.estado !== 'EN_PAGO' || !intent.checkoutId) return;
   const c = await reapApi.consultarCheckout(intent.checkoutId);
+  if (intent.estado !== 'EN_PAGO') return; // otra lectura ya lo concilio mientras Reap respondia
   if (c.status === 'FAILED' || c.status === 'EXPIRED') {
-    intent.estado = c.status === 'FAILED' ? 'FALLIDO' : 'EXPIRADO';
-    publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, `Libera compromiso: checkout ${c.status}`);
+    mover(intent, 'FALLIDA', { actor: 'reap', evento: `CHECKOUT_${c.status}`, datos: { checkoutId: c.id, motivo: c.failureReason || null }, concepto: `Libera compromiso: checkout ${c.status}` });
     await guardar();
     return;
   }
   if (c.status !== 'COMPLETED') return;
-  intent.estado = 'COMPLETADO';
   intent.orderId = c.orderId;
   intent.finalUsd = monto(c.finalAmount ?? intent.totalUsd);
   for (const a of L.devengado({ pre: intent.pre, finalCheckout: intent.finalUsd, cc: intent.cc })) {
     publicar(a, intent, a.tipo === 'AJUSTE' ? `Ajuste: Reap cobro distinto a lo cotizado (orden ${c.orderId})` : `${intent.producto.nombre} · ${intent.producto.tienda} · orden ${c.orderId}`);
   }
-  publicar(L.liberacion({ cc: intent.cc, monto: L.centavos(intent.topeUsd) }), intent, 'Libera compromiso: pago completado');
+  mover(intent, 'PAGADA', { actor: 'reap', evento: 'CHECKOUT_COMPLETED', datos: { checkoutId: c.id, orderId: c.orderId, finalUsd: intent.finalUsd } });
   await guardar();
 }
 
 const rutas = {
   'GET /api/estado': async () => {
+    if (Object.values(db.intents).filter((i) => vencer(i)).length) await guardar();
     for (const i of Object.values(db.intents)) await conciliar(i).catch((e) => console.error(e.message));
     let tarjeta = null;
     if (db.enrollmentId) tarjeta = (await reapApi.enrollment(db.enrollmentId).catch(() => ({ status: 'SIN_CONEXION' }))).status;
-    const completados = Object.values(db.intents).filter((i) => i.estado === 'COMPLETADO');
+    const completados = Object.values(db.intents).filter((i) => i.estado === 'PAGADA');
     return {
       modo: modoReap,
       tarjeta,
@@ -167,7 +230,8 @@ const rutas = {
     return { url: e.nextAction?.url || null, status: e.status };
   },
 
-  // 1. Intent del empleado: se aprueba contra presupuesto y nace el compromiso. 2. El agente cotiza.
+  // 1. Intent del empleado: nace SIN_COTIZACION y sin compromiso. 2. El agente cotiza; el tope se
+  // reserva solo si la cotizacion pasa el guard.
   'POST /api/intents': async (b) => {
     const cc = String(b.cc || '');
     const categoria = String(b.categoria || '');
@@ -187,16 +251,18 @@ const rutas = {
     const intent = {
       id: `INT-${randomUUID().slice(0, 8)}`, creado: new Date().toISOString(),
       solicitante: String(b.solicitante || 'Equipo').slice(0, 40), cc, categoria, cuenta: CATEGORIAS[categoria].cuenta,
-      busqueda, cantidad, maxCantidad, topeUsd, envio: 'economico', moneda: MONEDA, estado: 'APROBADO',
+      busqueda, cantidad, maxCantidad, topeUsd, envio: 'economico', moneda: MONEDA,
     };
+    nacer(intent, { actor: intent.solicitante, datos: { cc, topeUsd, busqueda } });
     db.intents[intent.id] = intent;
-    publicar(L.compromiso({ cc, monto: L.centavos(topeUsd) }), intent, `Compromiso: ${busqueda} (${intent.solicitante})`);
     await guardar();
     try {
       evaluar(intent, await cotizar(intent, { cantidad }, 'base'), 'Cotizacion del agente');
     } catch (e) {
+      if (e.codigoApi === 'TRANSICION_INVALIDA') throw e;
       intent.cotizacion = 'ERROR';
       intent.error = e.message;
+      anotar(intent, { actor: 'agente', evento: 'COTIZACION_ERROR', datos: { mensaje: e.message } });
     }
     await guardar();
     return intent;
@@ -219,7 +285,7 @@ const rutas = {
   'POST /api/intents/documento': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    puedeCotizar(intent);
     const instr = leerInstrucciones(String(b.texto || '').slice(0, 5000));
     const cotizado = await cotizar(intent, { cantidad: instr.cantidad ?? intent.cantidad, envioCaro: instr.envioCaro }, `doc-${Date.now()}`);
     cotizado.propuesta.saltarAprobacion = instr.saltarAprobacion;
@@ -228,50 +294,72 @@ const rutas = {
     return intent;
   },
 
-  // 3. Finanzas aprueba. El compromiso ya reservo el tope, asi que aqui basta con que la
-  // cotizacion haya pasado el guard y siga vigente.
+  // 3. Finanzas autoriza. La cotizacion ya reservo el tope al pasar el guard; aqui basta con que
+  // siga vigente. COTIZADA -> AUTORIZADA -> EN_PAGO. Si crear el checkout falla, queda AUTORIZADA
+  // y autorizar de nuevo reintenta con la misma Idempotency-Key.
   'POST /api/intents/aprobar': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
-    if (intent.cotizacion !== 'LISTA') {
+    if (intent.estado === 'BLOQUEADA' || intent.estado === 'SIN_COTIZACION') {
       registrarGuard(intent, intent.guard || { permitido: false, violaciones: [{ codigo: 'SIN_COTIZACION', mensaje: 'No hay cotizacion valida.' }] }, 'Intento de pago');
       await guardar();
-      throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`);
+      throw falla(409, `Ledger Guard bloqueo el pago: ${(intent.guard?.violaciones || []).map((v) => v.codigo).join(', ') || 'sin cotizacion valida'}`, intent.estado === 'BLOQUEADA' ? 'GUARD_BLOQUEO' : 'SIN_COTIZACION');
     }
-    if (intent.expira && new Date(intent.expira) <= new Date()) {
-      intent.cotizacion = 'BLOQUEADA';
-      intent.guard = { permitido: false, violaciones: [{ codigo: 'QUOTE_EXPIRADO', mensaje: 'La cotizacion de Reap ya expiro; hay que cotizar de nuevo.' }] };
+    const autorizable = () => (intent.estado === 'COTIZADA' || intent.estado === 'AUTORIZADA') && !enCurso.has(intent.id);
+    if (!autorizable()) throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
+    if (vencer(intent)) {
       registrarGuard(intent, intent.guard, 'Intento de pago');
       await guardar();
-      throw falla(409, 'La cotizacion de Reap expiro; cotiza de nuevo.');
+      throw falla(409, intent.estado === 'EXPIRADA' ? 'La cotizacion de Reap expiro; cotiza de nuevo.' : 'La cotizacion de Reap expiro antes de crear el pago; pide la compra de nuevo.', 'QUOTE_EXPIRADO');
     }
     if (!db.enrollmentId) throw falla(409, 'Primero registra la tarjeta corporativa en Reap.');
     if ((await reapApi.enrollment(db.enrollmentId)).status !== 'ACTIVE') throw falla(409, 'La tarjeta en Reap no esta ACTIVE.');
+    // Mientras se consultaba la tarjeta, finanzas pudo rechazar, pedir cambios o autorizar dos veces.
+    if (!autorizable()) throw falla(409, `El intent esta ${intent.estado}.`, 'TRANSICION_INVALIDA');
 
-    intent.estado = 'EN_CHECKOUT'; // reclamo antes de llamar a Reap: un doble clic no cobra dos veces
-    await guardar();
+    // Reclamo antes de llamar a Reap: un doble clic ya no encuentra la compra libre.
+    enCurso.add(intent.id);
     try {
+      if (intent.estado === 'COTIZADA') {
+        const por = String(b.por || 'Finanzas').trim().slice(0, 40) || 'Finanzas';
+        mover(intent, 'AUTORIZADA', { actor: por, evento: 'AUTORIZAR', datos: { quoteId: intent.quoteId, totalUsd: intent.totalUsd } });
+        intent.decision = { por, en: new Date().toISOString(), accion: 'AUTORIZAR', motivo: null };
+      }
+      await guardar();
       const c = await reapApi.checkout({ quoteId: intent.quoteId, enrollmentId: db.enrollmentId, returnUrl: `${PUBLIC_URL}/retorno?intent=${intent.id}`, clave: `${intent.id}-chk-${intent.quoteId}` });
       intent.checkoutId = c.id;
+      mover(intent, 'EN_PAGO', { actor: 'reap', evento: 'CHECKOUT_CREADO', datos: { checkoutId: c.id } });
       await guardar();
       return { url: c.nextAction?.url || `${PUBLIC_URL}/retorno?intent=${intent.id}` };
     } catch (e) {
-      intent.estado = 'APROBADO';
+      // Si Reap rechaza el checkout (cotizacion vencida o invalida), no hay reintento que valga:
+      // FALLIDA y se libera. Sin red, 5xx, 408 o 429 queda AUTORIZADA para reintentar.
+      const definitivo = e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
+      if (definitivo && intent.estado === 'AUTORIZADA') {
+        mover(intent, 'FALLIDA', { actor: 'reap', evento: 'CHECKOUT_RECHAZADO', datos: { mensaje: e.message } });
+        e.codigoApi = 'REAP_RECHAZO';
+      } else anotar(intent, { actor: 'reap', evento: 'CHECKOUT_ERROR', datos: { mensaje: e.message } });
       await guardar();
       throw e;
+    } finally {
+      enCurso.delete(intent.id);
     }
   },
 
-  // Recotiza un intent cuya cotizacion expiro o fue bloqueada.
+  // Recotiza: cotizacion vencida, bloqueada, sin cotizacion, o con cambios pedidos por finanzas.
+  // Si pasa el guard vuelve a COTIZADA y reserva el tope (si no hay compromiso, revisa antes que quepa).
   'POST /api/intents/recotizar': async (b) => {
     const intent = db.intents[b.id];
     if (!intent) throw falla(404, 'Ese intent no existe.');
-    if (intent.estado !== 'APROBADO') throw falla(409, `El intent esta ${intent.estado}.`);
+    puedeCotizar(intent);
     evaluar(intent, await cotizar(intent, { cantidad: intent.cantidad }, `re-${Date.now()}`), 'Recotizacion del agente');
     await guardar();
     return intent;
   },
+
+  // Finanzas rechaza o pide cambios sin llamar a Reap: no hay checkout que cancelar todavia.
+  'POST /api/intents/rechazar': async (b) => decision(b, 'RECHAZAR', b.motivo),
+  'POST /api/intents/cambios': async (b) => decision(b, 'CAMBIOS', b.comentario),
 
   // 4. Factura del proveedor: se adjunta al asiento que ya existe. No se busca, se construye.
   'POST /api/facturas': async (b) => {
@@ -296,19 +384,36 @@ const rutas = {
   },
 };
 
+// Solo se cotiza desde los estados de la maquina que lo permiten, y si el tope todavia cabe.
+function puedeCotizar(intent) {
+  if (!RECOTIZABLES.includes(intent.estado)) throw falla(409, `La compra esta ${intent.estado}; ya no se puede cotizar.`, 'TRANSICION_INVALIDA');
+  if (!comprometidoVivo(db.asientos, intent.id) && L.centavos(intent.topeUsd) > disponible(intent.cc)) {
+    throw falla(409, `El centro de costo ${intent.cc} ya no tiene presupuesto para el tope de USD ${intent.topeUsd}; no se puede recotizar.`, 'PRESUPUESTO_INSUFICIENTE');
+  }
+}
+
+async function decision(b, accion, motivo) {
+  const intent = db.intents[b.id];
+  if (!intent) throw falla(404, 'Ese intent no existe.');
+  decidir(intent, { accion, por: b.por, motivo }, { asientos: db.asientos, publicar });
+  await guardar();
+  return intent;
+}
+
 async function retorno(url) {
   const intent = db.intents[url.searchParams.get('intent')];
   if (!intent) return '/finanzas.html';
-  for (let i = 0; i < 5 && intent.estado === 'EN_CHECKOUT'; i++) {
+  for (let i = 0; i < 5 && intent.estado === 'EN_PAGO'; i++) {
     await conciliar(intent);
-    if (intent.estado === 'EN_CHECKOUT') await new Promise((s) => setTimeout(s, 2000));
+    if (intent.estado === 'EN_PAGO') await new Promise((s) => setTimeout(s, 2000));
   }
   return `/finanzas.html?intent=${intent.id}`;
 }
 
-function falla(status, mensaje) {
+function falla(status, mensaje, codigo) {
   const e = new Error(mensaje);
   e.status = status;
+  if (codigo) e.codigoApi = codigo;
   return e;
 }
 
@@ -358,7 +463,8 @@ createServer(async (req, res) => {
     return responder(res, 200, await ruta(req.method === 'POST' ? await leerCuerpo(req) : {}));
   } catch (e) {
     if (!e.status || e.status >= 500) console.error(e.message);
-    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message });
+    // error sigue siendo texto; codigo es aditivo (TRANSICION_INVALIDA, ...) para quien lo quiera.
+    return responder(res, e.status >= 400 && e.status < 600 ? e.status : 502, { error: e.message, ...(e.codigoApi ? { codigo: e.codigoApi } : {}) });
   }
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`J-Pay en ${PUBLIC_URL} (Reap ${modoReap})`);

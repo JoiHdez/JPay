@@ -84,8 +84,8 @@ const dolares = (n) => Number(n).toLocaleString('en-US', { style: 'currency', cu
  */
 export function resultadoAutorizar(respuesta, intent) {
   if (respuesta?.url) return { ir: respuesta.url };
-  if (intent?.estado === 'COMPLETADO') return { aviso: `Pagado · orden ${intent.orderId} · cobrado ${dolares(intent.finalUsd ?? intent.totalUsd)}` };
-  if (intent?.estado === 'EN_CHECKOUT') return { aviso: 'Pago enviado a Reap; esperando su confirmación.' };
+  if (intent?.estado === 'PAGADA') return { aviso: `Pagado · orden ${intent.orderId} · cobrado ${dolares(intent.finalUsd ?? intent.totalUsd)}` };
+  if (intent?.estado === 'EN_PAGO') return { aviso: 'Pago enviado a Reap; esperando su confirmación.' };
   return null;
 }
 
@@ -110,11 +110,13 @@ export function cuentaRegresiva(ms) {
  */
 export function motivosBloqueo(intent, tarjeta, ahora = Date.now()) {
   const m = [];
-  if (intent.estado !== 'APROBADO') return [`La compra está ${intent.estado}.`];
+  if (intent.estado === 'RECHAZADA') return ['Finanzas rechazó la compra.'];
+  if (intent.estado === 'CAMBIOS_SOLICITADOS') return ['Finanzas pidió cambios; falta recotizar.'];
+  if (!['COTIZADA', 'BLOQUEADA', 'SIN_COTIZACION', 'EXPIRADA', 'AUTORIZADA'].includes(intent.estado)) return [`La compra está ${intent.estado}.`];
   const ms = restante(intent.expira, ahora);
-  if (intent.cotizacion === 'ERROR' || !intent.quoteId) m.push('Sin cotización de Reap. Recotiza para obtener una.');
-  else if (ms != null && ms <= 0) m.push('La cotización expiró. Recotiza para obtener una nueva.');
-  if (intent.cotizacion === 'BLOQUEADA') {
+  if (intent.estado === 'SIN_COTIZACION' || !intent.quoteId) m.push('Sin cotización de Reap. Recotiza para obtener una.');
+  else if (intent.estado === 'EXPIRADA' || (ms != null && ms <= 0)) m.push('La cotización expiró. Recotiza para obtener una nueva.');
+  if (intent.estado === 'BLOQUEADA') {
     const viol = (intent.guard?.violaciones || []).filter((v) => !(ms != null && ms <= 0 && v.codigo === 'QUOTE_EXPIRADO'));
     if (viol.length) for (const v of viol) m.push(`Ledger Guard: ${v.mensaje}`);
     else if (!(ms != null && ms <= 0)) m.push('Ledger Guard bloquea el pago.');

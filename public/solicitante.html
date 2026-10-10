@@ -107,10 +107,10 @@ async function cargar() {
 }
 
 function tarjeta(i) {
-  const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
+  const bloq = i.estado === 'BLOQUEADA';
   const caja = el('div', { className: `intent ${bloq ? 'bloq' : ''}` }, ...resumenCompra(i));
-  if (i.estado === 'APROBADO') {
-    if (i.cotizacion === 'LISTA') {
+  if (['COTIZADA', 'BLOQUEADA', 'SIN_COTIZACION', 'EXPIRADA', 'CAMBIOS_SOLICITADOS'].includes(i.estado)) {
+    if (i.estado === 'COTIZADA') {
       const vence = i.expira ? el('span', { className: 'chip warn', title: 'Reap vence la cotización; finanzas debe autorizar antes.' }) : null;
       vence?.setAttribute('data-expira', i.expira);
       caja.append(el('div', { className: 'fila', style: 'margin-top:6px' },
