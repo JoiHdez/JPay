@@ -54,7 +54,11 @@
 
   <div>
     <section>
-      <h2>Mis compras</h2>
+      <h2>Mis compras
+        <label class="muted" style="display:flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0">Ver compras de
+          <select id="verDe" style="width:auto;padding:4px 8px"><option value="">Todas</option></select>
+        </label>
+      </h2>
       <div id="intents" class="muted">Sin compras todavía.</div>
     </section>
   </div>
@@ -102,9 +106,31 @@ async function cargar() {
   // No redibujar mientras alguien escribe en un documento de proveedor: perderia el cursor.
   if (document.activeElement?.tagName === 'TEXTAREA' && cont.contains(document.activeElement)) return;
   cont.replaceChildren();
+  pintarFiltro(d.intents);
+  // ponytail: filtra en el navegador sobre las compras recientes que devuelve /api/estado (15);
+  // un filtro en el servidor cuando haya usuarios reales con sesion.
+  const visibles = d.intents.filter((i) => !$('verDe').value || i.solicitante === $('verDe').value);
   if (!d.intents.length) cont.textContent = 'Sin compras todavía. Usa un preset o pide algo.';
-  for (const i of d.intents) cont.append(tarjeta(i));
+  else if (!visibles.length) cont.textContent = `${$('verDe').value} no tiene compras recientes.`;
+  for (const i of visibles) cont.append(tarjeta(i));
 }
+
+// Filtro "Ver compras de": Todas + cada solicitante con compras. Se recuerda en este navegador.
+function pintarFiltro(intents) {
+  const sel = $('verDe');
+  const elegido = sel.value;
+  const nombres = [...new Set(intents.map((i) => i.solicitante).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  if (elegido && !nombres.includes(elegido)) nombres.push(elegido);
+  sel.replaceChildren(el('option', { value: '', textContent: 'Todas' }), ...nombres.map((n) => el('option', { value: n, textContent: n })));
+  sel.value = elegido;
+}
+function elegirSolicitante(nombre) {
+  if (![...$('verDe').options].some((o) => o.value === nombre)) $('verDe').append(el('option', { value: nombre, textContent: nombre }));
+  $('verDe').value = nombre;
+  try { localStorage.setItem('jpay.verDe', nombre); } catch { /* sin almacenamiento: solo dura la sesion */ }
+}
+$('verDe').onchange = () => { elegirSolicitante($('verDe').value); cargar().catch(() => {}); };
+try { const guardado = localStorage.getItem('jpay.verDe'); if (guardado) elegirSolicitante(guardado); } catch { /* sin almacenamiento */ }
 
 function tarjeta(i) {
   const bloq = i.cotizacion === 'BLOQUEADA' && i.estado === 'APROBADO';
@@ -158,6 +184,8 @@ $('form').onsubmit = (e) => {
       solicitante: $('solicitante').value, cc: $('cc').value, busqueda: $('busqueda').value, categoria: $('categoria').value,
       topeUsd: Number($('tope').value), cantidad: Number($('cantidad').value), maxCantidad: Number($('max').value),
     });
+    // Tras pedir, mostrar las compras de quien pidio (si habia un filtro de otra persona).
+    if ($('verDe').value) elegirSolicitante($('solicitante').value.trim());
     await cargar();
   }, $('error'));
 };
